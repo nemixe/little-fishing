@@ -1,0 +1,1435 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,minimum-scale=1,user-scalable=no,viewport-fit=cover">
+<meta name="theme-color" content="#8ED8FF">
+<meta name="color-scheme" content="light">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="Little Fishing">
+<meta name="application-name" content="Little Fishing">
+<meta name="format-detection" content="telephone=no">
+<title>Little Fishing</title>
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="apple-touch-icon" href="apple-touch-icon.png">
+<link rel="icon" type="image/png" sizes="32x32" href="favicon-32.png">
+<link rel="icon" type="image/png" sizes="192x192" href="icon-192.png">
+<style>
+  html,body{margin:0;padding:0;width:100%;height:100%;overflow:hidden;background:#8ED8FF;position:fixed;inset:0;
+    touch-action:none;-ms-touch-action:none;overscroll-behavior:none;
+    -webkit-user-select:none;user-select:none;-webkit-touch-callout:none;-webkit-tap-highlight-color:transparent;-webkit-text-size-adjust:100%}
+  canvas{display:block;position:fixed;left:0;top:0;width:100vw;height:100vh;height:100dvh;touch-action:none;outline:none}
+  #safe{position:fixed;left:0;top:0;width:0;height:0;visibility:hidden;pointer-events:none;
+    padding:env(safe-area-inset-top,0px) env(safe-area-inset-right,0px) env(safe-area-inset-bottom,0px) env(safe-area-inset-left,0px)}
+  #ctl{position:fixed;left:50%;transform:translateX(-50%);bottom:calc(env(safe-area-inset-bottom,0px) + 4.5%);display:none;gap:22px;z-index:2}
+  #ctl button{width:58px;height:58px;border-radius:50%;border:3px solid #fff;background:rgba(255,255,255,.9);padding:11px;cursor:pointer;box-shadow:0 2px 6px rgba(0,0,0,.15);touch-action:none}
+  #ctl button svg{width:100%;height:100%;display:block;pointer-events:none}
+  #ctl button.off{opacity:.4}
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<div id="safe"></div>
+<div id="ctl" aria-label="Parent controls">
+  <button id="bSound" aria-label="Sound on/off"><svg viewBox="0 0 24 24"><path d="M4 9h4l5-4v14l-5-4H4z" fill="#3a4a5a"/><path id="sw" d="M16 8.5a5 5 0 0 1 0 7M18.5 6a8.5 8.5 0 0 1 0 12" stroke="#3a4a5a" stroke-width="2" fill="none" stroke-linecap="round"/></svg></button>
+  <button id="bVib" aria-label="Vibration on/off"><svg viewBox="0 0 24 24"><rect x="8" y="3" width="8" height="18" rx="2" fill="#3a4a5a"/><path d="M4.5 8v8M19.5 8v8M2 10v4M22 10v4" stroke="#3a4a5a" stroke-width="2" stroke-linecap="round"/></svg></button>
+</div>
+<script>
+(() => {
+'use strict';
+/* ================= Little Fishing (v5: float rig with baited hook, smaller fish; one boat - a bear cub fishes, bucket in the boat; endless, bucket counting, many species) — a calm fishing game for ~3 year olds =================
+   Per fish: tap a fish -> hook drops, fish nibbles -> timing meter: tap the meter/button while the arrow is
+   in the glowing zone -> fish is reeled up -> drag it into the bucket. A tap outside the zone makes the fish
+   wiggle "bye-bye" and swim away (a new one comes later). Endless play, running count, gentle milestones.
+   Difficulty rises with every catch and approaches a capped floor/ceiling asymptotically. */
+
+const cv = document.getElementById('c');
+const ctx = cv.getContext('2d', {alpha: false});
+const reduceMotion = window.matchMedia && matchMedia('(prefers-reduced-motion: reduce)').matches;
+const MOT = reduceMotion ? 0.45 : 1;
+const TAU = Math.PI * 2;
+const DEBUG = /[?&]debug/.test(location.search);
+const SHEET = (location.search.match(/[?&]sheet=(\d)/) || [])[1];
+
+const COLORS = [
+  {id:'red',    body:'#FF5A5F', dark:'#D63A48', light:'#FFA3A6', note:523.25},
+  {id:'orange', body:'#FF9F1C', dark:'#DD7700', light:'#FFC978', note:587.33},
+  {id:'yellow', body:'#FFD43B', dark:'#DDA200', light:'#FFEB99', note:659.25},
+  {id:'green',  body:'#3DDC84', dark:'#1DAA5E', light:'#A2F2C6', note:783.99},
+  {id:'blue',   body:'#3FA9F5', dark:'#1C7CD0', light:'#A6D8FF', note:880.00},
+  {id:'purple', body:'#A86CFF', dark:'#7A43D8', light:'#D4B8FF', note:1046.5},
+];
+
+/* ---------- utils ---------- */
+const clamp = (v, a, b) => Math.max(a, Math.min(b, v));
+const lerp = (a, b, t) => a + (b - a) * t;
+const rand = (a, b) => a + Math.random() * (b - a);
+const pick = arr => arr[Math.floor(Math.random() * arr.length)];
+const easeIO = t => t < .5 ? 4*t*t*t : 1 - Math.pow(-2*t + 2, 3) / 2;
+const easeOut = t => 1 - Math.pow(1 - t, 3);
+const easeBack = t => { const c1 = 1.4, c3 = c1 + 1; return 1 + c3*Math.pow(t-1,3) + c1*Math.pow(t-1,2); };
+const dist = (ax, ay, bx, by) => Math.hypot(ax - bx, ay - by);
+function rr(g, x, y, w, h, r) {
+  r = Math.max(0, Math.min(r, w/2, h/2));
+  g.beginPath(); g.moveTo(x + r, y);
+  g.arcTo(x + w, y, x + w, y + h, r); g.arcTo(x + w, y + h, x, y + h, r);
+  g.arcTo(x, y + h, x, y, r); g.arcTo(x, y, x + w, y, r); g.closePath();
+}
+
+/* ---------- settings / persistence ---------- */
+const STORE = 'littleFishing.v2';
+let settings = {sound: true, vib: true, skill: 0, best: 0};
+try { Object.assign(settings, JSON.parse(localStorage.getItem(STORE) || '{}')); } catch (e) {}
+settings.skill = Math.max(0, +settings.skill || 0);
+function save() { try { localStorage.setItem(STORE, JSON.stringify(settings)); } catch (e) {} }
+
+/* Difficulty as a smooth function of skill s (s >= 0, no hard cap).
+   Every value glides toward a sensible floor/ceiling (exponential approach), so it keeps getting a little
+   harder but never impossible. */
+function P(s = S.skill) {
+  return {
+    fishCount: Math.min(6, Math.round(2 + 4 * (1 - Math.exp(-s / 12)))),  // 2 -> 6 fish
+    size: 0.66 + 0.34 * Math.exp(-s / 10),                                  // 100% -> 66% of the (already smaller) base size
+    speed: 14 + 44 * (1 - Math.exp(-s / 10)),                               // px/s at U=400: 14 -> 58
+    zone: 0.14 + 0.24 * Math.exp(-s / 8),                                   // target zone: 38% -> 14% of bar
+    period: 2.4 + 2.8 * Math.exp(-s / 9),                                   // arrow back-and-forth: 5.2s -> 2.4s
+  };
+}
+const SKILL_PER_CATCH = 0.6, FLEE_EASE_STREAK = 3, FLEE_EASE = 1.2;
+
+/* ---------- audio (synthesized, offline) ---------- */
+let AC = null, master = null, noiseBuf = null;
+function audioInit() {
+  try {
+    if (!AC) {
+      AC = new (window.AudioContext || window.webkitAudioContext)();
+      master = AC.createGain(); master.gain.value = settings.sound ? 0.55 : 0;
+      const lp = AC.createBiquadFilter(); lp.type = 'lowpass'; lp.frequency.value = 3200;
+      const comp = AC.createDynamicsCompressor();
+      master.connect(lp); lp.connect(comp); comp.connect(AC.destination);
+      noiseBuf = AC.createBuffer(1, AC.sampleRate * 0.6, AC.sampleRate);
+      const d = noiseBuf.getChannelData(0); for (let i = 0; i < d.length; i++) d[i] = Math.random() * 2 - 1;
+    }
+    if (AC.state === 'suspended') AC.resume();
+  } catch (e) { AC = null; }
+}
+function note(freq, o = {}) {
+  if (!AC || !settings.sound || AC.state !== 'running') return;
+  const t0 = AC.currentTime + (o.when || 0), dur = o.dur || 0.4, vol = o.vol == null ? 0.2 : o.vol;
+  const osc = AC.createOscillator(), g = AC.createGain();
+  osc.type = o.type || 'sine';
+  osc.frequency.setValueAtTime(o.from || freq, t0);
+  if (o.from) osc.frequency.exponentialRampToValueAtTime(freq, t0 + (o.glide || dur * 0.6));
+  if (o.vib) { const l = AC.createOscillator(), lg = AC.createGain(); l.frequency.value = 6; lg.gain.value = o.vib; l.connect(lg); lg.connect(osc.frequency); l.start(t0); l.stop(t0 + dur + .05); }
+  g.gain.setValueAtTime(0.0001, t0);
+  g.gain.exponentialRampToValueAtTime(vol, t0 + (o.att || 0.02));
+  g.gain.exponentialRampToValueAtTime(0.0001, t0 + dur);
+  osc.connect(g); g.connect(master); osc.start(t0); osc.stop(t0 + dur + 0.05);
+}
+function noise(o = {}) {
+  if (!AC || !settings.sound || AC.state !== 'running') return;
+  const t0 = AC.currentTime + (o.when || 0), dur = o.dur || 0.3;
+  const src = AC.createBufferSource(); src.buffer = noiseBuf;
+  const bp = AC.createBiquadFilter(); bp.type = 'bandpass'; bp.frequency.value = o.freq || 1200; bp.Q.value = o.q || 0.9;
+  const g = AC.createGain(); g.gain.setValueAtTime(0.0001, t0);
+  g.gain.exponentialRampToValueAtTime(o.vol || 0.1, t0 + 0.02); g.gain.exponentialRampToValueAtTime(0.0001, t0 + dur);
+  src.connect(bp); bp.connect(g); g.connect(master); src.start(t0); src.stop(t0 + dur + 0.05);
+}
+/* every color has its own gentle voice (pitch + timbre) */
+function colorVoice(c, vol = 0.2, when = 0) {
+  const f = c.note;
+  switch (c.id) {
+    case 'red':    note(f, {vol, when, dur: .5}); break;
+    case 'orange': note(f, {vol: vol * .8, when, dur: .45, type: 'triangle'}); break;
+    case 'yellow': note(f, {vol, when, dur: .6, vib: 7}); break;
+    case 'green':  note(f, {vol, when, dur: .2}); note(f * 1.25, {vol, when: when + .14, dur: .3}); break;
+    case 'blue':   note(f, {vol, when, dur: .5, from: f * .7, glide: .18}); break;
+    case 'purple': note(f, {vol, when, dur: .9}); note(f * 2.76, {vol: vol * .18, when, dur: .35}); break;
+  }
+}
+const sfx = {
+  bloop()   { note(520, {from: 260, glide: .12, dur: .2, vol: .12}); },
+  hookDrop(){ note(330, {from: 520, glide: .35, dur: .4, vol: .07, type: 'triangle'}); noise({freq: 900, vol: .04, dur: .2, when: .3}); },
+  hit()     { note(784, {vol: .16, dur: .35}); note(1175, {vol: .12, dur: .5, when: .08}); },
+  flee()    { noise({freq: 1300, vol: .05, dur: .25}); note(700, {from: 480, glide: .18, dur: .22, vol: .07, when: .05});
+              note(880, {from: 620, glide: .18, dur: .25, vol: .06, when: .22}); note(560, {from: 300, glide: .1, dur: .16, vol: .05, when: .6}); },
+  reel()    { note(700, {from: 260, glide: .9, dur: 1, vol: .06, type: 'triangle'});
+              for (let i = 0; i < 12; i++) note(2100, {vol: .012, dur: .03, when: i * .075, type: 'square'}); },
+  splash()  { noise({freq: 1400, vol: .09, dur: .35}); noise({freq: 600, vol: .05, dur: .45, when: .05}); },
+  pickUp()  { note(660, {from: 440, glide: .1, dur: .18, vol: .08}); },
+  floatBack(){ note(392, {from: 494, glide: .3, dur: .35, vol: .05}); },
+  celebrate(c) { colorVoice(c, .18); note(c.note * 1.5, {vol: .1, dur: .6, when: .18}); },
+  bigCelebrate(c) { [1, 1.25, 1.5, 2].forEach((m, i) => note(c.note * m, {vol: .13, dur: .55, when: i * .13})); note(c.note * 2, {vol: .07, dur: 1.2, when: .55, vib: 4}); },
+  countPop(i) { const steps = [0, 2, 4, 5, 7, 9, 11], semi = steps[i % 7] + 12 * Math.floor(i / 7), f = 261.63 * Math.pow(2, semi / 12);
+                noise({freq: 2200, vol: .035, dur: .07}); note(f, {vol: .15, dur: .4}); note(f * 2, {vol: .03, dur: .25}); },
+  empty()   { note(233, {type: 'triangle', vol: .1, dur: .16}); note(208, {type: 'triangle', vol: .08, dur: .2, when: .17}); note(185, {vol: .04, dur: .3, when: .34}); },
+  intoBucket() { note(392, {from: 784, glide: .35, dur: .4, vol: .06}); noise({freq: 1400, vol: .08, dur: .35, when: .05}); },
+  milestone5() { [784, 988, 1175, 1568].forEach((f, i) => note(f, {vol: .08, dur: .6, when: .5 + i * .12})); },
+  milestone10(){ [523, 659, 784, 1047, 784, 1047, 1319].forEach((f, i) => note(f, {vol: .09, dur: .7, when: .5 + i * .22}));
+                 note(262, {vol: .05, dur: 2.2, att: .3, when: .5}); },
+};
+function buzz(p) { if (settings.vib && navigator.vibrate) { try { navigator.vibrate(p); } catch (e) {} } }
+
+/* ---------- state ---------- */
+const S = {
+  mode: 'start', t: 0, skill: settings.skill * 0.6,   // new session: warm up a little below last session's level
+  fish: [], cur: null, count: 0, matches: 0, recent: [], caught: [], lineup: null, bucketHop: 0, hopQ: 0, hopHand: false, bucketWobble: 0, bucketTapped: false, prompt: null, parts: [],
+  idleT: 0, idleMiss: 0, slowT: 0, spawnQ: [], nextId: 1, fleeStreak: 0, flees: 0,
+  m: null, modeT: 0, bucketBounce: 0, bucketBoost: 1, dragMiss: 0, hoverT: 0, hover: false,
+  ptr: {down: false, x: 0, y: 0, id: null, offX: 0, offY: 0},
+  bob: {x: 0, y: 0, hx: 0, hy: 0, dip: 0, surf: 0, bait: 1, onWater: true}, boatBob: 0, boatTilt: 0, wave: 0, clouds: [], weeds: [], hudPulse: 0, rainbow: 0, home: null, started: false,
+  perf: {frames: 0, ms: 0},
+};
+window.__lf = { S, P, COLORS, bucketHit: (x, y) => bucketHit(x, y), mouthOf: f => mouthOf(f), surfY: x => surfY(x), pickFishAt: (x, y) => { const f = pickFishAt(x, y); return f ? f.id : null; },
+  // test-only: alpha mask of exactly how fish f is drawn right now (full-size offscreen render, independent of the 1-px hit path)
+  drawnMask(id, x0, y0, w, h) { const f = S.fish.find(f => f.id === id); const c = document.createElement('canvas'); c.width = w; c.height = h;
+    const g = c.getContext('2d'); g.translate(-x0, -y0); drawFish(f.c, f.x + f.dx, f.y, f.r, f.face, fishParams(f), g);
+    const d = g.getImageData(0, 0, w, h).data, a = []; for (let i = 3; i < d.length; i += 4) a.push(d[i]); return a; }, get L() { return L; }, get DPR() { return DPR; }, get MODELS() { return MODELS; },
+  // test-only helper (not reachable from the UI): pretend n fish were caught
+  debugFill(n) { for (let i = 0; i < n; i++) { const c = pick(COLORS), model = pick(MODEL_IDS); S.caught.push({c, model}); S.recent.push(c); if (S.recent.length > 5) S.recent.shift(); S.count++; } } }; // read-only hooks for automated testing
+
+/* ---------- layout (safe-area aware, recomputed on resize / orientation change) ---------- */
+let W = 0, H = 0, U = 0, DPR = 1, L = {}, bg = null;
+const safeEl = document.getElementById('safe');
+function readSafe() {
+  const cs = getComputedStyle(safeEl);
+  return {t: parseFloat(cs.paddingTop) || 0, r: parseFloat(cs.paddingRight) || 0, b: parseFloat(cs.paddingBottom) || 0, l: parseFloat(cs.paddingLeft) || 0};
+}
+function rodPt(t, c) { const u = 1 - t; return {x: u * u * L.handX + 2 * u * t * c.x + t * t * L.tipX, y: u * u * L.handY + 2 * u * t * c.y + t * t * L.tipY}; }
+/* where a reeled-up fish hangs: from the rod tip, facing the bucket, tilted head-up just enough to fit on screen and above the water */
+function danglePose(f, pre) {
+  const r = f.r, M = MODELS[f.model] || MODELS.classic, len = 2.45 * r;
+  const avail = W - L.safe.r - 8 - L.tipX;   // tilt head-up only as much as needed so the whole fish (length and thickness) fits
+  let a = 0; while (a < 1.45 && len * Math.cos(a) + r * .65 * Math.sin(a) > avail) a += .02;
+  const ca = Math.cos(a);
+  const vert = len * Math.sin(a) + r * .62 * ca;
+  let mouthY = L.waterTop - 6 - vert;
+  if (!pre) mouthY = clamp(mouthY, L.tipY + 14, L.tipY + U * .14);
+  const face = -1, rot = a, mm = M.mouth, lx = -mm[0] * r, ly = mm[1] * r, c = Math.cos(rot), s = Math.sin(rot);
+  return {x: L.tipX - (lx * c - ly * s), y: mouthY - (lx * s + ly * c), face, rot, mouthY};
+}
+/* the boat (and everything in it) bobs and tilts gently with the waves */
+function boatPt(x, y) { const dx = x - L.boatCX, dy = y - L.waterTop, c = Math.cos(S.boatTilt), s = Math.sin(S.boatTilt);
+  return {x: L.boatCX + dx * c - dy * s, y: L.waterTop + dx * s + dy * c + S.boatBob}; }
+function withBoat(fn) { ctx.save(); ctx.translate(L.boatCX, L.waterTop + S.boatBob); ctx.rotate(S.boatTilt); ctx.translate(-L.boatCX, -L.waterTop); fn(); ctx.restore(); }
+const FISH_SCALE = 0.83;
+/* the water surface (same wave as the drawn water line): the float always sits on it */
+function surfY(x) { return L.waterTop + Math.sin(x * .02 + S.t * 1.2 * MOT) * 4; }
+/* where the float goes for a fish + where that fish swims to so its mouth meets the baited hook */
+function planHook(f) {
+  const mm = MODELS[f.model].mouth, maxX = W - L.safe.r - L.bobR - 6;
+  let face = f.face >= 0 ? 1 : -1;
+  const mx0 = f.x + face * f.r * mm[0], want = clamp(mx0, L.bobMin, maxX);
+  if (Math.abs(want - mx0) > f.r * .3) face = Math.sign(want - f.x) || face;   // fish under/behind the boat turns and swims out to the bait
+  f.hookFace = face;
+  f.hookX = clamp(want - face * f.r * mm[0], f.r * 1.5, W - f.r * 1.5);
+  f.hookY = hookYFor(f);
+  f.bobX = clamp(f.hookX + face * f.r * mm[0], L.bobMin, maxX);               // float right above the mouth
+}
+function layout() {
+  const nw = Math.round(cv.clientWidth || innerWidth), nh = Math.round(cv.clientHeight || innerHeight);
+  W = nw; H = nh; U = Math.min(W, H);
+  // cap pixel ratio and total pixels for steady 60fps on mid-range phones
+  DPR = Math.min(2, window.devicePixelRatio || 1);
+  if (W * H * DPR * DPR > 2.4e6) DPR = Math.max(1, Math.sqrt(2.4e6 / (W * H)));
+  cv.width = Math.round(W * DPR); cv.height = Math.round(H * DPR);
+  ctx.setTransform(DPR, 0, 0, DPR, 0, 0);
+  const sa = L.safe = readSafe(), land = W > H;
+  const top = sa.t, bot = H - sa.b;
+  L.land = land;
+  L.waterTop = top + (bot - top) * (land ? 0.34 : 0.31);
+  L.sandY = bot - U * .05;
+  L.fishR = clamp(Math.min(U * 0.16, (bot - L.waterTop) * 0.21), 38, 115) * FISH_SCALE;   // v5: fish drawn ~17% smaller
+  L.speedK = clamp(U / 400, 0.8, 2.2);
+  // HUD (count) + hold-to-exit home button
+  L.homeR = clamp(U * 0.045, 17, 24); L.homeX = sa.l + 10 + L.homeR; L.homeY = top + 10 + L.homeR;
+  L.backR = clamp(U * 0.11, 44, 64); L.backX = W / 2; L.backY = bot - clamp(U * .03, 10, 20) - L.backR;
+  // ---- one boat holds everything: a bear-cub fisher and the bucket sit IN the boat; the rod reaches over the water ----
+  const wt = L.waterTop;
+  L.bw = Math.max(84, Math.min(clamp(U * 0.3, 100, 210), (wt - top - 6) / 1.334)); L.bh = L.bw * 0.82;
+  L.boatH = L.bw * 0.42;
+  L.gunY = wt - L.boatH * 0.45; L.deckY = wt - L.boatH * 0.15; L.hullBot = wt + L.boatH * 0.5;
+  L.fw = L.bw * 0.74; L.fh = L.bh * 1.32; L.fR = L.fh * 0.245;
+  L.x0 = sa.l + (land ? Math.max(W * 0.08, 60) : 10) + L.boatH * 0.25;     // stern
+  // v5 layout: bucket at the back of the boat (left), the bear sits in front of it (right, toward the water) holding the rod
+  L.bx = L.x0 + L.bw * 0.5 + L.boatH * 0.15;                               // bucket at the stern
+  L.fx = L.bx + L.bw * 0.5 + L.fR * 1.15 + 4;                               // bear right next to it, nearer the bow
+  L.x1 = L.fx + L.fR * 1.75;                                                // bow, just past the bear's paws
+  L.boatCX = (L.x0 + L.x1) / 2;
+  L.bBot = L.deckY; L.bTop = L.bBot - L.bh;
+  L.bobR = Math.max(10, U * .027); L.baitLen = clamp(U * .075, 26, 48); L.hookS = Math.max(5.5, U * .019);
+  L.handX = L.fx + L.fR * 1.3; L.handY = L.deckY - L.fh * 0.38;
+  L.tipX = L.x1 + L.boatH * 0.45 + clamp(U * .06, 14, 40);                // rod reaches out past the bow, over the water
+  L.bobMin = L.x1 + L.boatH * 0.45 + L.bobR + 10;                           // the float never goes under/into the boat
+  L.restBobX = Math.max(L.tipX + U * .05, L.bobMin + 4);
+  L.tipY = Math.max(top + 16, danglePose({r: L.fishR, model: 'classic'}, true).mouthY - clamp(U * .07, 22, 44));
+  // rod arc: the gentlest arc that clears the bucket handle (in very short landscape skies it passes behind the handle)
+  const handleTop = x => { const d = (x - L.bx) / (L.bw * .5); return Math.abs(d) >= 1 ? 1e9 : L.bTop - L.bh * .55 * Math.sqrt(1 - d * d); };
+  let rc = null;
+  for (let cy = Math.min(L.handY, L.tipY) - 10; cy >= top - 90; cy -= 6) {
+    const c = {x: L.handX + (L.tipX - L.handX) * 0.4, y: cy}; let ok = true;
+    for (let t = .05; t < 1; t += .05) { const q = rodPt(t, c); if (q.y > handleTop(q.x) - 6) { ok = false; break; } }
+    if (ok) { rc = c; break; }
+  }
+  L.rodC = rc || {x: L.handX + (L.tipX - L.handX) * 0.4, y: top};
+  // color-request bubble: first free spot in the sky (never over the home button, fisher, bucket, rod or line)
+  L.pW = clamp(U * 0.3, 100, 200); L.pH = L.pW * 0.66;
+  const obst = [], addR = (a, b, c, d) => obst.push([a, b, c, d]);
+  addR(L.homeX - L.homeR - 6, L.homeY - L.homeR - 6, L.homeX + L.homeR + 6, L.homeY + L.homeR + 6);
+  addR(L.fx - L.fR * 1.7, L.deckY - L.fh - 8, L.fx + L.fR * 1.7, L.deckY);
+  addR(L.bx - L.bw * .56, L.bTop - L.bh * .6, L.bx + L.bw * .56, L.bBot);
+  for (let t = 0; t <= 1.001; t += .05) { const q = rodPt(t, L.rodC); addR(q.x - 5, q.y - 5, q.x + 5, q.y + 5); }
+  addR(L.tipX - 10, L.tipY - 10, L.restBobX + L.bobR + 6, wt);
+  const fits = (cx, cy, w, h) => { const a = [cx - w / 2, cy - h / 2, cx + w / 2, cy + h * .72];
+    return a[0] >= sa.l + 4 && a[2] <= W - sa.r - 4 && !obst.some(o => a[0] < o[2] && a[2] > o[0] && a[1] < o[3] && a[3] > o[1]); };
+  let placed = false;
+  for (const sc of [1, .86, .74]) { const w = L.pW * sc, h = L.pH * sc, cy = top + 8 + h / 2;
+    for (const cx of [L.homeX + L.homeR + 12 + w / 2, W - sa.r - 8 - w / 2, (L.tipX + W - sa.r) / 2, W / 2])
+      if (fits(cx, cy, w, h)) { L.pX = cx; L.pY = cy; L.pW = w; L.pH = h; placed = true; break; }
+    if (placed) break; }
+  if (!placed) { L.pW *= .74; L.pH *= .74; L.pX = W - sa.r - 8 - L.pW / 2; L.pY = top + 8 + L.pH / 2; }
+  // meter panel: full-width at the bottom, big bar + big thumb button on the right
+  const pad = clamp(U * 0.03, 10, 18);
+  L.mPad = pad; L.mBarH = clamp(U * 0.1, 44, 68); L.mArrowH = L.mBarH * 0.6; L.mBtnR = clamp(U * 0.115, 44, 70);
+  L.mPW = Math.min(W - sa.l - sa.r - 16, 820);
+  L.mPH = Math.max(L.mArrowH + L.mBarH + pad * 0.6, L.mBtnR * 2) + pad * 2;
+  L.mPX = sa.l + (W - sa.l - sa.r - L.mPW) / 2; L.mPY = bot - L.mPH - clamp(U * 0.025, 8, 20);
+  L.mBarX = L.mPX + pad + L.mBarH * 0.4; L.mBarW = L.mPW - pad * 3 - L.mBtnR * 2 - L.mBarH * 0.8;
+  L.mBarY = L.mPY + pad + L.mArrowH + (L.mPH - pad * 2 - L.mArrowH - L.mBarH) / 2;
+  L.mBtnX = L.mPX + L.mPW - pad - L.mBtnR; L.mBtnY = L.mPY + L.mPH / 2;
+  // decor
+  if (!S.clouds.length) for (let i = 0; i < 3; i++) S.clouds.push({x: rand(0, 1), y: rand(.08, .3), s: rand(.7, 1.15), v: rand(.004, .008)});
+  S.weeds = []; const nW = Math.ceil(W / 120);
+  for (let i = 0; i < nW; i++) S.weeds.push({x: (i + rand(.1, .9)) * W / nW, h: rand(.08, .15) * H, c: pick(['#2BB673', '#38C98A', '#1FA463']), ph: rand(0, TAU)});
+  buildBackground();
+  // keep fish inside the new bounds
+  for (const f of S.fish) {
+    f.r = L.fishR * f.sizeMul; assignLaneY(f);
+    if (f.state === 'swim') { f.y = f.baseY; if (f.x > -f.r && f.x < W + f.r) f.x = clamp(f.x, f.r, W - f.r); }
+  }
+  if (S.cur) {
+    const f = S.cur; f.to = danglePose(f);
+    if (f.state === 'hooked') planHook(f);
+    if (f.state === 'dangle') { f.x = f.to.x; f.y = f.to.y; f.rot = f.to.rot; f.face = f.to.face; }
+  }
+  if (S.ptr.down && S.mode === 'drag') { S.ptr.down = false; tryDrop(-1e4, -1e4); }
+  if (S.lineup) relayoutLineup();
+}
+let resizeT = 0;
+function onResize() { clearTimeout(resizeT); resizeT = setTimeout(layout, 60); }
+addEventListener('resize', onResize);
+addEventListener('orientationchange', () => setTimeout(layout, 250));
+if (window.visualViewport) visualViewport.addEventListener('resize', onResize);
+
+/* static background cached in an offscreen canvas (sky, sun, water, light rays, sand) */
+function buildBackground() {
+  bg = document.createElement('canvas'); bg.width = cv.width; bg.height = cv.height;
+  const g = bg.getContext('2d'); g.setTransform(DPR, 0, 0, DPR, 0, 0);
+  const wt = L.waterTop;
+  let gr = g.createLinearGradient(0, 0, 0, wt); gr.addColorStop(0, '#8ED8FF'); gr.addColorStop(1, '#DDF5FF');
+  g.fillStyle = gr; g.fillRect(0, 0, W, wt + 8);
+  // sun
+  const sx = W * .86, sy = L.safe.t + Math.min(H * .07, (wt - L.safe.t) * .28) + 6, sr = U * .06;
+  g.fillStyle = 'rgba(255,225,110,.45)';
+  for (let i = 0; i < 10; i++) { const a = i * TAU / 10; g.beginPath(); g.ellipse(sx + Math.cos(a) * sr * 1.55, sy + Math.sin(a) * sr * 1.55, sr * .35, sr * .12, a, 0, TAU); g.fill(); }
+  g.fillStyle = '#FFE36E'; g.beginPath(); g.arc(sx, sy, sr, 0, TAU); g.fill();
+  // water
+  gr = g.createLinearGradient(0, wt + 6, 0, H); gr.addColorStop(0, '#5CCBFA'); gr.addColorStop(.55, '#2E9BEA'); gr.addColorStop(1, '#1D74C9');
+  g.fillStyle = gr; g.fillRect(0, wt + 6, W, H - wt);
+  g.fillStyle = 'rgba(255,255,255,.06)';
+  for (let i = 0; i < 4; i++) { const x0 = W * (.1 + i * .27); g.beginPath(); g.moveTo(x0, wt); g.lineTo(x0 + W * .08, wt); g.lineTo(x0 + W * .16, H); g.lineTo(x0 + W * .02, H); g.fill(); }
+  // sand
+  g.fillStyle = '#F6D98B'; g.beginPath(); g.moveTo(0, H);
+  for (let x = 0; x <= W + 30; x += 30) g.lineTo(x, L.sandY + Math.sin(x * .013) * U * .015); g.lineTo(W, H); g.fill();
+}
+
+/* ---------- fish ---------- */
+const LANES = 6;
+function swimBounds(r) { return {yMin: L.waterTop + r * 0.9 + U * 0.02, yMax: L.sandY - r * 0.75}; }
+function assignLaneY(f) {
+  const b = swimBounds(f.r);
+  if (f.lane == null) {
+    const used = S.fish.filter(o => o !== f && o.lane != null && o.state === 'swim').map(o => o.lane);
+    const free = [...Array(LANES).keys()].filter(i => !used.includes(i));
+    f.lane = free.length ? pick(free) : Math.floor(rand(0, LANES));
+  }
+  const y = b.yMax <= b.yMin ? (b.yMin + b.yMax) / 2 : lerp(b.yMin, b.yMax, (f.lane + 0.5) / LANES);
+  f.baseY = y + rand(-.04, .04) * Math.max(0, b.yMax - b.yMin);
+}
+function spawnFish(opts = {}) {
+  const p = P();
+  const usedC = S.fish.filter(f => f.state !== 'flee').map(f => f.c.id);
+  const free = COLORS.filter(c => !usedC.includes(c.id));
+  const c = opts.color || pick(free.length ? free : COLORS);
+  const fromLeft = opts.fromLeft != null ? opts.fromLeft : Math.random() < .5;
+  const model = opts.model || pickModel();
+  const sizeMul = p.size * MODELS[model].size * rand(.95, 1.05);
+  const f = { id: S.nextId++, c, model, sizeMul, r: L.fishR * sizeMul, dir: fromLeft ? 1 : -1, face: fromLeft ? 1 : -1,
+    speed: p.speed * L.speedK * rand(.85, 1.15), ph: rand(0, TAU), state: 'swim', dx: 0, rot: 0, scale: 1,
+    turnT: rand(6, 12), lane: null, tail: rand(0, TAU), wig: 0 };
+  assignLaneY(f); f.y = f.baseY;
+  f.x = opts.inside ? rand(f.r * 1.5, W - f.r * 1.5) : (fromLeft ? -f.r * 1.6 : W + f.r * 1.6);
+  S.fish.push(f);
+  return f;
+}
+function swimmers() { return S.fish.filter(f => f.state === 'swim'); }
+function activeFish() { return S.fish.filter(f => f.state !== 'flee'); }
+function topUpFish(delay = 0.9) {
+  const want = P().fishCount;
+  const have = activeFish().length + S.spawnQ.length;
+  for (let i = have; i < want; i++) S.spawnQ.push({t: delay + (i - have) * 1.3});
+}
+function mouthOf(f) {
+  const fc = Math.abs(f.face) < .2 ? Math.sign(f.face || 1) * .2 : f.face;
+  const ca = Math.cos(f.rot), sa = Math.sin(f.rot);
+  const mm = MODELS[f.model].mouth, lx = fc * f.r * mm[0] * f.scale, ly = f.r * mm[1] * f.scale;
+  return {x: f.x + f.dx + lx * ca - ly * sa, y: f.y + lx * sa + ly * ca};
+}
+function hookYFor(f) { const yMax = L.mPY - f.r * 0.8 - 8; return Math.min(f.y, Math.max(L.waterTop + f.r * .9, yMax)); }
+
+/* ---------- fish sprites (body pre-rendered per color/size: cheap to draw every frame) ---------- */
+const sprites = new Map();
+function paintFishBody(g, c, r) {
+  const lw = Math.max(1.5, r * 0.05);
+  g.lineJoin = 'round'; g.lineCap = 'round';
+  g.beginPath(); g.moveTo(-r * 0.4, -r * 0.55); g.quadraticCurveTo(-r * 0.1, -r * 1.02, r * 0.32, -r * 0.6); g.closePath();
+  g.fillStyle = c.dark; g.fill(); g.strokeStyle = c.dark; g.lineWidth = lw; g.stroke();
+  const gr = g.createLinearGradient(0, -r * .7, 0, r * .7);
+  gr.addColorStop(0, c.light); gr.addColorStop(.45, c.body); gr.addColorStop(1, c.body);
+  g.beginPath(); g.ellipse(0, 0, r, r * 0.68, 0, 0, TAU); g.fillStyle = gr; g.fill(); g.stroke();
+  g.save(); g.beginPath(); g.ellipse(0, 0, r, r * 0.68, 0, 0, TAU); g.clip();
+  g.fillStyle = 'rgba(255,255,255,.32)'; g.beginPath(); g.ellipse(r * 0.1, r * 0.42, r * 0.75, r * 0.32, 0, 0, TAU); g.fill();
+  g.strokeStyle = 'rgba(255,255,255,.45)'; g.lineWidth = r * 0.09;
+  for (const sx of [-0.35, -0.05]) { g.beginPath(); g.arc(r * sx - r * .6, 0, r * 0.62, -0.6, 0.6); g.stroke(); }
+  g.restore();
+  g.beginPath(); g.ellipse(-r * 0.05, r * 0.16, r * 0.26, r * 0.13, 0.5, 0, TAU); g.fillStyle = c.dark; g.globalAlpha = .85; g.fill(); g.globalAlpha = 1;
+  g.fillStyle = 'rgba(255,120,150,.45)'; g.beginPath(); g.ellipse(r * 0.44, r * 0.2, r * 0.11, r * 0.07, 0, 0, TAU); g.fill();
+  g.fillStyle = '#fff'; g.beginPath(); g.arc(r * 0.48, -r * 0.14, r * 0.22, 0, TAU); g.fill();
+  g.strokeStyle = c.dark; g.lineWidth = lw * .7; g.stroke();
+  g.fillStyle = '#23263a'; g.beginPath(); g.arc(r * 0.54, -r * 0.12, r * 0.125, 0, TAU); g.fill();
+  g.fillStyle = '#fff'; g.beginPath(); g.arc(r * 0.585, -r * 0.18, r * 0.045, 0, TAU); g.fill();
+  g.strokeStyle = '#5a2a2a'; g.lineWidth = Math.max(1.5, r * 0.05);
+  g.beginPath(); g.arc(r * 0.74, r * 0.14, r * 0.12, 0.25 * Math.PI, 0.85 * Math.PI); g.stroke();
+}
+/* ---------- fish species (models). Each: static body (cached sprite) + live animated part (tail/legs/tentacles).
+   All fit inside x[-1.5r,1.5r], y[-1.3r,1.3r]; hit = ellipse used only for the soft prompt glow (taps are pixel-precise, see paintedAt); mouth = where the hook attaches. */
+function eyeP(g, x, y, s, c) {
+  g.fillStyle = '#fff'; g.beginPath(); g.arc(x, y, s, 0, TAU); g.fill();
+  g.strokeStyle = c.dark; g.lineWidth = Math.max(1, s * .22); g.stroke();
+  g.fillStyle = '#23263a'; g.beginPath(); g.arc(x + s * .27, y + s * .09, s * .57, 0, TAU); g.fill();
+  g.fillStyle = '#fff'; g.beginPath(); g.arc(x + s * .48, y - s * .18, s * .2, 0, TAU); g.fill();
+}
+function smileP(g, x, y, s) { g.strokeStyle = '#5a2a2a'; g.lineWidth = Math.max(1.5, s * .42); g.lineCap = 'round'; g.beginPath(); g.arc(x, y, s, .25 * Math.PI, .85 * Math.PI); g.stroke(); }
+function cheekP(g, x, y, s) { g.fillStyle = 'rgba(255,120,150,.45)'; g.beginPath(); g.ellipse(x, y, s, s * .62, 0, 0, TAU); g.fill(); }
+function gradP(g, c, top, bot) { const gr = g.createLinearGradient(0, top, 0, bot); gr.addColorStop(0, c.light); gr.addColorStop(.45, c.body); gr.addColorStop(1, c.body); return gr; }
+function dotsP(g, r, list, color) { g.fillStyle = color; for (const [x, y, d] of list) { g.beginPath(); g.arc(x * r, y * r, d * r, 0, TAU); g.fill(); } }
+const LW = r => Math.max(1.5, r * .05);
+const MODELS = {
+  classic: { w: 10, size: 1, hit: [1.45, 1.15], mouth: [1.0, .12],
+    body: (g, c, r) => paintFishBody(g, c, r),
+    tail(g, c, r, ph) { const tw = Math.sin(ph) * r * .16; g.fillStyle = c.dark; g.beginPath(); g.moveTo(-r * .78, 0);
+      g.quadraticCurveTo(-r * 1.15, -r * .2 + tw * .5, -r * 1.38, -r * .55 + tw); g.quadraticCurveTo(-r * 1.2, tw * .6, -r * 1.38, r * .55 + tw);
+      g.quadraticCurveTo(-r * 1.15, r * .2 + tw * .5, -r * .78, 0); g.fill(); } },
+  puffer: { w: 9, size: .95, hit: [1.25, 1.2], mouth: [.86, .12],
+    body(g, c, r) { const R = r * .78;
+      g.fillStyle = c.dark;
+      for (let i = 0; i < 18; i++) { const a = i / 18 * TAU; if (Math.cos(a) > .72) continue;
+        g.beginPath(); g.moveTo(Math.cos(a - .13) * R * .95, Math.sin(a - .13) * R * .95); g.lineTo(Math.cos(a) * R * 1.22, Math.sin(a) * R * 1.22);
+        g.lineTo(Math.cos(a + .13) * R * .95, Math.sin(a + .13) * R * .95); g.closePath(); g.fill(); }
+      g.beginPath(); g.arc(0, 0, R, 0, TAU); g.fillStyle = gradP(g, c, -R, R); g.fill(); g.strokeStyle = c.dark; g.lineWidth = LW(r); g.stroke();
+      g.save(); g.beginPath(); g.arc(0, 0, R, 0, TAU); g.clip(); g.fillStyle = 'rgba(255,255,255,.45)'; g.beginPath(); g.ellipse(0, R * .7, R * .95, R * .48, 0, 0, TAU); g.fill(); g.restore();
+      g.globalAlpha = .5; dotsP(g, r, [[-.35, -.42, .07], [-.05, -.58, .06], [-.52, -.08, .065], [-.22, -.2, .05], [.14, -.4, .05]], c.dark); g.globalAlpha = 1;
+      g.fillStyle = c.dark; g.beginPath(); g.ellipse(-r * .1, r * .16, r * .18, r * .1, .6, 0, TAU); g.fill();
+      cheekP(g, r * .46, r * .2, r * .1); eyeP(g, r * .36, -r * .16, r * .24, c);
+      g.fillStyle = '#ff8fa3'; g.strokeStyle = '#5a2a2a'; g.lineWidth = Math.max(1.5, r * .045); g.beginPath(); g.arc(r * .8, r * .14, r * .075, 0, TAU); g.fill(); g.stroke(); },
+    tail(g, c, r, ph) { const tw = Math.sin(ph) * r * .12; g.fillStyle = c.dark; g.beginPath(); g.moveTo(-r * .7, 0);
+      g.quadraticCurveTo(-r * .95, -r * .1 + tw * .5, -r * 1.12, -r * .34 + tw); g.quadraticCurveTo(-r * 1.0, tw * .5, -r * 1.12, r * .34 + tw);
+      g.quadraticCurveTo(-r * .95, r * .1 + tw * .5, -r * .7, 0); g.fill(); } },
+  clown: { w: 9, size: 1, hit: [1.5, 1.1], mouth: [1.0, .08],
+    body(g, c, r) { const ry = r * .5, ink = '#2a2a3a';
+      g.fillStyle = c.body; g.strokeStyle = ink; g.lineWidth = LW(r);
+      g.beginPath(); g.ellipse(-r * .1, -ry * .86, r * .46, r * .22, -.06, Math.PI, TAU); g.closePath(); g.fill(); g.stroke();
+      g.beginPath(); g.ellipse(-r * .2, ry * .88, r * .26, r * .14, .1, 0, Math.PI); g.closePath(); g.fill(); g.stroke();
+      g.beginPath(); g.ellipse(0, 0, r, ry, 0, 0, TAU); g.fillStyle = gradP(g, c, -ry, ry); g.fill();
+      g.save(); g.clip();
+      for (const [x, w] of [[.4, .11], [-.1, .12], [-.62, .09]]) { g.fillStyle = '#fff'; g.strokeStyle = ink; g.lineWidth = LW(r) * .8; g.beginPath(); g.ellipse(x * r, 0, w * r, ry * 1.15, 0, 0, TAU); g.fill(); g.stroke(); }
+      g.restore();
+      g.beginPath(); g.ellipse(0, 0, r, ry, 0, 0, TAU); g.strokeStyle = ink; g.lineWidth = LW(r); g.stroke();
+      g.fillStyle = c.dark; g.beginPath(); g.ellipse(r * .12, ry * .3, r * .17, r * .08, .5, 0, TAU); g.fill();
+      cheekP(g, r * .66, ry * .42, r * .07); eyeP(g, r * .68, -ry * .22, r * .15, c); smileP(g, r * .86, ry * .12, r * .08); },
+    tail(g, c, r, ph) { const tw = Math.sin(ph) * r * .14; g.fillStyle = c.body; g.strokeStyle = '#2a2a3a'; g.lineWidth = LW(r);
+      g.beginPath(); g.moveTo(-r * .88, 0); g.quadraticCurveTo(-r * 1.05, -r * .48 + tw, -r * 1.38, -r * .4 + tw);
+      g.quadraticCurveTo(-r * 1.22, tw, -r * 1.38, r * .4 + tw); g.quadraticCurveTo(-r * 1.05, r * .48 + tw, -r * .88, 0); g.fill(); g.stroke(); } },
+  angel: { w: 8, size: 1, hit: [1.3, 1.3], mouth: [.8, .04],
+    body(g, c, r) {
+      g.fillStyle = c.dark; g.lineJoin = 'round';
+      for (const k of [-1, 1]) { g.beginPath(); g.moveTo(r * .18, k * r * .5); g.quadraticCurveTo(-r * .3, k * r * 1.08, -r * .88, k * r * 1.06);
+        g.quadraticCurveTo(-r * .55, k * r * .6, -r * .45, k * r * .12); g.closePath(); g.fill(); }
+      g.strokeStyle = 'rgba(255,255,255,.45)'; g.lineWidth = r * .04;
+      for (const k of [-1, 1]) { g.beginPath(); g.moveTo(-r * .02, k * r * .58); g.quadraticCurveTo(-r * .35, k * r * .92, -r * .72, k * r * .99); g.stroke(); }
+      const body = () => { g.beginPath(); g.moveTo(r * .8, 0); g.quadraticCurveTo(r * .45, -r * .64, 0, -r * .64); g.quadraticCurveTo(-r * .52, -r * .56, -r * .56, 0);
+        g.quadraticCurveTo(-r * .52, r * .56, 0, r * .64); g.quadraticCurveTo(r * .45, r * .64, r * .8, 0); g.closePath(); };
+      body(); g.fillStyle = gradP(g, c, -r * .64, r * .64); g.fill();
+      g.save(); body(); g.clip(); g.fillStyle = c.dark; g.globalAlpha = .5;
+      for (const x of [.1, -.3]) { g.beginPath(); g.ellipse(x * r, 0, r * .075, r * .72, 0, 0, TAU); g.fill(); } g.globalAlpha = 1;
+      g.fillStyle = 'rgba(255,255,255,.3)'; g.beginPath(); g.ellipse(r * .1, r * .4, r * .55, r * .22, 0, 0, TAU); g.fill(); g.restore();
+      body(); g.strokeStyle = c.dark; g.lineWidth = LW(r); g.stroke();
+      cheekP(g, r * .44, r * .2, r * .08); eyeP(g, r * .42, -r * .13, r * .17, c); smileP(g, r * .64, r * .1, r * .08); },
+    tail(g, c, r, ph) { const tw = Math.sin(ph) * r * .1; g.fillStyle = c.dark; g.beginPath(); g.moveTo(-r * .5, 0);
+      g.lineTo(-r * .98, -r * .32 + tw); g.quadraticCurveTo(-r * .86, tw, -r * .98, r * .32 + tw); g.closePath(); g.fill(); } },
+  ray: { w: 7, size: 1.05, hit: [1.4, 1.05], mouth: [.8, .1],
+    body(g, c, r) {
+      const shape = () => { g.beginPath(); g.moveTo(r * .82, r * .05); g.quadraticCurveTo(r * .45, -r * .28, -r * .05, -r * .74);
+        g.quadraticCurveTo(-r * .22, -r * .3, -r * .62, 0); g.quadraticCurveTo(-r * .22, r * .3, -r * .05, r * .74);
+        g.quadraticCurveTo(r * .45, r * .38, r * .82, r * .05); g.closePath(); };
+      shape(); g.fillStyle = gradP(g, c, -r * .7, r * .7); g.fill(); g.strokeStyle = c.dark; g.lineWidth = LW(r); g.lineJoin = 'round'; g.stroke();
+      g.save(); shape(); g.clip();
+      dotsP(g, r, [[-.08, -.38, .06], [-.25, -.12, .05], [0, .34, .06], [-.3, .16, .045], [.16, -.14, .04], [-.1, .06, .04], [.12, .2, .035]], 'rgba(255,255,255,.6)'); g.restore();
+      cheekP(g, r * .46, r * .14, r * .07); eyeP(g, r * .34, -r * .1, r * .12, c); eyeP(g, r * .6, -r * .06, r * .11, c); smileP(g, r * .66, r * .14, r * .07); },
+    tail(g, c, r, ph) { const tw = Math.sin(ph) * r * .14; g.strokeStyle = c.dark; g.lineWidth = Math.max(2, r * .07); g.lineCap = 'round';
+      g.beginPath(); g.moveTo(-r * .55, 0); g.quadraticCurveTo(-r * .95, tw, -r * 1.42, -tw * .6); g.stroke();
+      g.fillStyle = c.dark; g.beginPath(); g.arc(-r * 1.42, -tw * .6, r * .06, 0, TAU); g.fill(); } },
+  sardine: { w: 8, size: .72, hit: [1.75, 1.6], mouth: [1.0, .03],
+    body(g, c, r) { const ry = r * .36;
+      g.fillStyle = c.dark; g.beginPath(); g.moveTo(-r * .28, -ry * .85); g.lineTo(-r * .02, -ry * 1.6); g.lineTo(r * .16, -ry * .9); g.closePath(); g.fill();
+      g.beginPath(); g.ellipse(0, 0, r, ry, 0, 0, TAU); g.fillStyle = gradP(g, c, -ry, ry); g.fill();
+      g.save(); g.clip(); g.fillStyle = 'rgba(235,245,255,.85)'; g.beginPath(); g.ellipse(0, ry * .8, r * 1.05, ry * .55, 0, 0, TAU); g.fill();
+      g.fillStyle = c.dark; g.globalAlpha = .55; g.fillRect(-r, -ry * .1, r * 1.55, ry * .2); g.globalAlpha = 1; g.restore();
+      g.beginPath(); g.ellipse(0, 0, r, ry, 0, 0, TAU); g.strokeStyle = c.dark; g.lineWidth = LW(r); g.stroke();
+      eyeP(g, r * .6, -ry * .22, r * .18, c); smileP(g, r * .84, ry * .22, r * .08); },
+    tail(g, c, r, ph) { const tw = Math.sin(ph) * r * .15; g.fillStyle = c.dark; g.beginPath(); g.moveTo(-r * .9, 0);
+      g.lineTo(-r * 1.4, -r * .4 + tw); g.lineTo(-r * 1.16, tw * .5); g.lineTo(-r * 1.4, r * .4 + tw); g.closePath(); g.fill(); } },
+  whale: { w: 6, size: 1.18, hit: [1.4, 1.05], mouth: [.95, .2],
+    body(g, c, r) {
+      const shape = () => { g.beginPath(); g.moveTo(-r * .86, -r * .02); g.bezierCurveTo(-r * .5, -r * .45, r * .2, -r * .72, r * .75, -r * .44);
+        g.bezierCurveTo(r * 1.06, -r * .26, r * 1.06, r * .3, r * .7, r * .44); g.bezierCurveTo(r * .2, r * .62, -r * .4, r * .42, -r * .86, r * .12); g.closePath(); };
+      shape(); g.fillStyle = gradP(g, c, -r * .62, r * .5); g.fill();
+      g.save(); shape(); g.clip(); g.fillStyle = 'rgba(255,255,255,.5)'; g.beginPath(); g.ellipse(r * .2, r * .52, r * .9, r * .26, -.05, 0, TAU); g.fill();
+      g.strokeStyle = 'rgba(255,255,255,.8)'; g.lineWidth = r * .03;
+      for (const y of [.33, .42]) { g.beginPath(); g.moveTo(-r * .3, r * y); g.quadraticCurveTo(r * .3, r * (y + .06), r * .8, r * (y - .04)); g.stroke(); }
+      g.restore();
+      shape(); g.strokeStyle = c.dark; g.lineWidth = LW(r); g.stroke();
+      g.fillStyle = c.dark; g.beginPath(); g.ellipse(r * .08, r * .3, r * .22, r * .09, .7, 0, TAU); g.fill();
+      dotsP(g, r, [[.36, -.66, .06], [.28, -.75, .05], [.45, -.76, .05], [.36, -.84, .045]], 'rgba(150,215,255,.95)');
+      cheekP(g, r * .6, r * .12, r * .09); eyeP(g, r * .55, -r * .1, r * .13, c);
+      g.strokeStyle = '#5a2a2a'; g.lineWidth = Math.max(1.5, r * .045); g.lineCap = 'round';
+      g.beginPath(); g.moveTo(r * .68, r * .2); g.quadraticCurveTo(r * .82, r * .29, r * .95, r * .17); g.stroke(); },
+    tail(g, c, r, ph) { const tw = Math.sin(ph) * r * .1; g.fillStyle = c.dark; g.beginPath(); g.moveTo(-r * .8, r * .02);
+      g.quadraticCurveTo(-r * 1.05, -r * .05 + tw, -r * 1.12, -r * .3 + tw); g.quadraticCurveTo(-r * 1.3, -r * .44 + tw, -r * 1.46, -r * .32 + tw);
+      g.quadraticCurveTo(-r * 1.25, -r * .12 + tw, -r * 1.34, r * .1 + tw); g.quadraticCurveTo(-r * 1.1, r * .12 + tw, -r * .8, r * .1); g.closePath(); g.fill(); } },
+  boxfish: { w: 8, size: .92, hit: [1.3, 1.2], mouth: [.86, .12],
+    body(g, c, r) {
+      rr(g, -r * .7, -r * .52, r * 1.5, r * 1.04, r * .34); g.fillStyle = gradP(g, c, -r * .52, r * .52); g.fill(); g.strokeStyle = c.dark; g.lineWidth = LW(r); g.stroke();
+      g.save(); rr(g, -r * .7, -r * .52, r * 1.5, r * 1.04, r * .34); g.clip();
+      dotsP(g, r, [[-.45, -.25, .08], [-.15, -.32, .07], [-.42, .12, .07], [-.1, .02, .08], [.15, -.32, .06], [-.18, .32, .06], [.12, .32, .05], [-.52, .38, .05]], 'rgba(255,255,255,.7)');
+      g.restore();
+      g.fillStyle = c.dark; g.beginPath(); g.ellipse(-r * .05, r * .14, r * .16, r * .09, .6, 0, TAU); g.fill();
+      cheekP(g, r * .5, r * .2, r * .09); eyeP(g, r * .44, -r * .16, r * .2, c);
+      g.fillStyle = '#ff8fa3'; g.strokeStyle = '#5a2a2a'; g.lineWidth = Math.max(1.2, r * .035); g.beginPath(); g.ellipse(r * .84, r * .13, r * .07, r * .06, 0, 0, TAU); g.fill(); g.stroke(); },
+    tail(g, c, r, ph) { const tw = Math.sin(ph) * r * .12; g.fillStyle = c.dark; g.beginPath(); g.moveTo(-r * .66, 0);
+      g.quadraticCurveTo(-r * .9, -r * .28 + tw, -r * 1.1, -r * .27 + tw); g.quadraticCurveTo(-r * .98, tw, -r * 1.1, r * .27 + tw); g.quadraticCurveTo(-r * .9, r * .28 + tw, -r * .66, 0); g.fill(); } },
+  octopus: { w: 2.5, size: .95, hit: [1.2, 1.25], mouth: [.5, .02], rare: true,
+    body(g, c, r) {
+      g.beginPath(); g.ellipse(0, -r * .24, r * .62, r * .56, 0, 0, TAU); g.fillStyle = gradP(g, c, -r * .8, r * .32); g.fill(); g.strokeStyle = c.dark; g.lineWidth = LW(r); g.stroke();
+      dotsP(g, r, [[-.32, -.52, .08], [-.06, -.66, .06], [-.4, -.22, .06], [.22, -.58, .05]], 'rgba(255,255,255,.4)');
+      cheekP(g, -r * .1, r * .04, r * .08); cheekP(g, r * .5, r * .02, r * .08);
+      eyeP(g, r * .06, -r * .22, r * .17, c); eyeP(g, r * .4, -r * .22, r * .15, c); smileP(g, r * .23, -r * .02, r * .09); },
+    tail(g, c, r, ph) { g.lineCap = 'round';
+      for (const [col, lw] of [[c.dark, r * .18], [c.body, r * .11]]) { g.strokeStyle = col; g.lineWidth = lw;
+        for (let i = 0; i < 5; i++) { const x0 = r * (-.42 + i * .21), w = Math.sin(ph * .8 + i * 1.3) * r * .13;
+          g.beginPath(); g.moveTo(x0, r * .12); g.quadraticCurveTo(x0 + w, r * .5, x0 - w * .6 - r * .12, r * .84); g.stroke(); } } } },
+  crab: { w: 2.5, size: .95, hit: [1.3, 1.2], mouth: [.88, -.42], rare: true,
+    body(g, c, r) {
+      g.strokeStyle = c.dark; g.lineWidth = r * .07; g.lineCap = 'round';
+      for (const x of [-.2, .24]) { g.beginPath(); g.moveTo(x * r, -r * .2); g.lineTo(x * r * 1.05, -r * .5); g.stroke(); }
+      g.beginPath(); g.ellipse(0, 0, r * .7, r * .42, 0, 0, TAU); g.fillStyle = gradP(g, c, -r * .42, r * .42); g.fill(); g.strokeStyle = c.dark; g.lineWidth = LW(r); g.stroke();
+      dotsP(g, r, [[-.32, -.14, .07], [0, -.24, .06], [.3, -.12, .06]], 'rgba(255,255,255,.4)');
+      eyeP(g, -r * .21, -r * .58, r * .14, c); eyeP(g, r * .25, -r * .58, r * .14, c);
+      cheekP(g, -r * .34, r * .12, r * .08); cheekP(g, r * .38, r * .12, r * .08); smileP(g, r * .02, r * .06, r * .12); },
+    tail(g, c, r, ph) {
+      g.strokeStyle = c.dark; g.lineCap = 'round'; g.lineJoin = 'round'; g.lineWidth = r * .08;
+      for (let i = 0; i < 3; i++) for (const sd of [-1, 1]) { const a = Math.sin(ph * 1.2 + i + (sd > 0 ? 1.5 : 0)) * r * .06, x0 = sd * r * (.28 + i * .14);
+        g.beginPath(); g.moveTo(x0, r * .25); g.lineTo(x0 + sd * r * .2, r * .42 + a); g.lineTo(x0 + sd * r * .28, r * .62 + a); g.stroke(); }
+      for (const sd of [-1, 1]) { const op = (Math.sin(ph * .9 + (sd > 0 ? 1 : 0)) * .5 + .5) * .35 + .25, dir = sd > 0 ? -Math.PI / 4 : -3 * Math.PI / 4;
+        g.strokeStyle = c.dark; g.lineWidth = r * .1; g.beginPath(); g.moveTo(sd * r * .55, -r * .08); g.lineTo(sd * r * .8, -r * .3); g.stroke();
+        g.fillStyle = c.body; g.lineWidth = LW(r); g.beginPath(); g.moveTo(sd * r * .88, -r * .42);
+        g.arc(sd * r * .88, -r * .42, r * .21, dir + op, dir - op + TAU); g.closePath(); g.fill(); g.stroke(); } } },
+};
+const MODEL_IDS = Object.keys(MODELS);
+function pickModel() {
+  const inWater = S.fish.filter(f => f.state !== 'flee').map(f => f.model);
+  let pool = MODEL_IDS.filter(id => !inWater.includes(id)); if (!pool.length) pool = MODEL_IDS;   // prefer variety
+  let tot = pool.reduce((a, id) => a + MODELS[id].w, 0), x = Math.random() * tot;
+  for (const id of pool) { x -= MODELS[id].w; if (x <= 0) return id; }
+  return pool[0];
+}
+function fishSprite(c, r, model) {
+  const rq = Math.max(4, Math.round(r)), key = model + '|' + c.id + '|' + rq + '|' + DPR.toFixed(2);
+  let s = sprites.get(key); if (s) return s;
+  if (sprites.size > 70) sprites.delete(sprites.keys().next().value);
+  const w = rq * 3, h = rq * 2.6, cx = rq * 1.5, cy = rq * 1.3;
+  const cnv = document.createElement('canvas'); cnv.width = Math.ceil(w * DPR); cnv.height = Math.ceil(h * DPR);
+  const g = cnv.getContext('2d'); g.scale(DPR, DPR); g.translate(cx, cy); MODELS[model].body(g, c, rq);
+  s = {cnv, w, h, cx, cy, rq}; sprites.set(key, s); return s;
+}
+function drawFish(c, x, y, r, face, o = {}, g = ctx) {
+  const model = MODELS[o.model] ? o.model : 'classic', M = MODELS[model];
+  const fc = Math.abs(face) < .15 ? Math.sign(face || 1) * .15 : face;
+  const sp = fishSprite(c, r, model), k = r / sp.rq;
+  g.save(); if (o.alpha != null) g.globalAlpha = o.alpha;
+  g.translate(x, y); g.rotate(o.rot || 0); g.scale(fc * (o.scale || 1), (o.scale || 1));
+  if (o.glow) { g.fillStyle = `rgba(255,255,200,${0.35 + 0.2 * o.glow})`; g.beginPath(); g.ellipse(-r * .1, 0, r * M.hit[0], r * M.hit[1] * .95, 0, 0, TAU); g.fill(); }
+  M.tail(g, c, r, o.tail || 0);
+  g.drawImage(sp.cnv, -sp.cx * k, -sp.cy * k, sp.w * k, sp.h * k);
+  g.restore();
+}
+/* ---------- precise, shape-accurate fish hit test ----------
+   A tap hits a fish only where that fish is actually painted right now (body, fins and tail as drawn, at its current
+   size, rotation, facing and tail phase): the fish is drawn with the same drawFish() into a 1x1 offscreen canvas,
+   translated so the tap point lands on that single pixel, and the pixel's alpha is read. No padding. */
+const hitCnv = document.createElement('canvas'); hitCnv.width = hitCnv.height = 1;
+const hitG = hitCnv.getContext('2d', {willReadFrequently: true});
+function paintedAt(px, py, x, y, r, draw) {
+  if (Math.abs(px - x) > r * 1.7 || Math.abs(py - y) > r * 1.5) return false;   // cheap reject outside the model's bounds
+  hitG.setTransform(1, 0, 0, 1, 0, 0); hitG.clearRect(0, 0, 1, 1);
+  hitG.setTransform(1, 0, 0, 1, .5 - px, .5 - py);                              // tap point -> centre of the single pixel
+  draw(hitG);
+  return hitG.getImageData(0, 0, 1, 1).data[3] > 40;
+}
+function fishParams(f) { return {tail: f.tail, rot: f.rot, scale: f.scale, model: f.model}; }
+function fishHit(f, px, py) { const x = f.x + f.dx; return paintedAt(px, py, x, f.y, f.r * (f.scale || 1), g => drawFish(f.c, x, f.y, f.r, f.face, fishParams(f), g)); }
+/* the fish a tap at (px, py) picks among the swimming fish: the top-most one painted there */
+function pickFishAt(px, py) { let best = null; for (const f of swimmers()) if (fishHit(f, px, py)) best = f; return best; }
+function star(x, y, r, color, rot = 0, alpha = 1) {
+  ctx.save(); ctx.globalAlpha = alpha; ctx.translate(x, y); ctx.rotate(rot); ctx.beginPath();
+  for (let i = 0; i < 10; i++) { const a = -Math.PI / 2 + i * Math.PI / 5, rad = i % 2 ? r * .48 : r; ctx.lineTo(Math.cos(a) * rad, Math.sin(a) * rad); }
+  ctx.closePath(); ctx.fillStyle = color; ctx.fill(); ctx.lineJoin = 'round'; ctx.strokeStyle = 'rgba(255,255,255,.9)'; ctx.lineWidth = Math.max(1, r * .12); ctx.stroke(); ctx.restore();
+}
+function hand(x, y, s, press = 0, alpha = .9) {
+  ctx.save(); ctx.globalAlpha = alpha; ctx.translate(x, y); const k = s * (1 - press * .12); ctx.scale(k, k);
+  ctx.fillStyle = 'rgba(0,0,0,.15)'; rr(ctx, -6, 4, 18, 40, 9); ctx.fill(); rr(ctx, -17, 30, 46, 40, 16); ctx.fill();
+  ctx.fillStyle = '#fff'; ctx.strokeStyle = '#4a5568'; ctx.lineWidth = 3; ctx.lineJoin = 'round';
+  rr(ctx, -9, 0, 18, 40, 9); ctx.fill(); ctx.stroke();
+  rr(ctx, -20, 26, 46, 40, 16); ctx.fill(); ctx.stroke();
+  ctx.beginPath(); ctx.ellipse(-20, 42, 8, 13, -0.5, 0, TAU); ctx.fill(); ctx.stroke();
+  ctx.fillStyle = '#fff'; ctx.fillRect(-7, 24, 14, 8);
+  ctx.restore();
+}
+
+/* ---------- particles (capped) ---------- */
+function addPart(p) { if (S.parts.length > 160) return; S.parts.push(Object.assign({life: 0, max: 1.2, vx: 0, vy: 0, size: 10, rot: rand(0, TAU), vr: rand(-1, 1)}, p)); }
+function stars(x, y, n, colors, spread = 1) {
+  for (let i = 0; i < n; i++) { const a = rand(0, TAU), sp = rand(40, 110) * spread;
+    addPart({type: 'star', x, y, vx: Math.cos(a) * sp, vy: Math.sin(a) * sp - 30, size: rand(.06, .1) * U * .5 + 6, color: pick(colors), max: rand(1.2, 1.8)}); }
+}
+function bubbles(x, y, n) { for (let i = 0; i < n; i++) addPart({type: 'bubble', x: x + rand(-20, 20), y: y + rand(-10, 10), vx: rand(-10, 10), vy: rand(-60, -30), size: rand(4, 10), max: rand(1, 1.8)}); }
+function drops(x, y, n) { for (let i = 0; i < n; i++) addPart({type: 'drop', x: x + rand(-15, 15), y, vx: rand(-70, 70), vy: rand(-170, -80), size: rand(3, 6), max: .9, g: 420}); }
+function ripple(x, y) { addPart({type: 'ripple', x, y, size: 10, max: 1.1}); }
+
+/* ---------- color prompt ---------- */
+function maybePrompt(force) {
+  if (S.prompt && S.prompt.left > 0) return;
+  S.prompt = null;
+  const sw = swimmers();
+  if (sw.length < 2) return;
+  if (!force && (S.count < 2 || Math.random() > .45)) return;
+  const pf = pick(sw), c = pf.c;
+  S.prompt = {c, model: pf.model, t: 0, left: 2};
+  setTimeout(() => colorVoice(c, .14), 250);
+}
+
+/* ---------- flow ---------- */
+function setMode(m) {
+  S.mode = m; S.modeT = 0; S.idleT = 0;
+  ctlEl.style.display = m === 'start' ? 'flex' : 'none';
+}
+function startPlay() {
+  audioInit(); requestFull(); keepAwake();
+  if (!S.started) { S.started = true; S.fish = []; S.spawnQ = []; S.parts = []; for (let i = 0; i < P().fishCount; i++) spawnFish({inside: true}); }
+  setMode('idle');
+}
+function goHome() {
+  if (S.lineup) { S.lineup = null; }
+  if (S.cur) { S.cur.state = 'swim'; S.cur.scale = 1; S.cur.rot = 0; S.cur.dx = 0; assignLaneY(S.cur); }
+  S.cur = null; S.m = null; S.ptr.down = false; S.home = null; S.hover = false;
+  setMode('start');
+}
+function requestFull() {
+  const el = document.documentElement, rf = el.requestFullscreen || el.webkitRequestFullscreen;
+  if (rf && !document.fullscreenElement && !document.webkitFullscreenElement) { try { const p = rf.call(el, {navigationUI: 'hide'}); if (p && p.catch) p.catch(() => {}); } catch (e) {} }
+}
+let wakeLock = null;
+async function keepAwake() { try { if ('wakeLock' in navigator && !wakeLock) { wakeLock = await navigator.wakeLock.request('screen'); wakeLock.addEventListener('release', () => { wakeLock = null; }); } } catch (e) {} }
+
+function selectFish(f) {
+  S.cur = f; f.state = 'hooked'; S.idleMiss = 0;
+  f.hookFrom = {x: S.bob.x, hx: S.bob.hx, hy: S.bob.hy};
+  colorVoice(f.c, .16); sfx.hookDrop(); buzz(15);
+  planHook(f);
+  setMode('hook');
+  const p = P();
+  S.m = { u: 0, phase: 0, period: p.period, zw: p.zone, zc: rand(.28, .72), show: 0, age: 0, glowBtn: 0,
+          lock: 0, lastIn: -9, demo: S.fleeStreak >= 2, flash: 0, hitU: 0, closing: false, c: f.c, model: f.model };
+  S.dragMiss = 0; S.bucketBoost = 1;
+}
+function meterArea(x, y) {
+  return (y >= L.mPY - 28 && x >= L.mPX - 24 && x <= L.mPX + L.mPW + 24) || dist(x, y, L.mBtnX, L.mBtnY) < L.mBtnR * 1.5;
+}
+function meterTap() {
+  const m = S.m; if (!m || m.closing || m.lock > 0 || m.show < 1 || m.age < 0.35) return; // ignore the very first instant (anti double-tap)
+  const inZone = Math.abs(m.u - m.zc) <= m.zw / 2 + 0.02 || (S.t - m.lastIn) < 0.15;    // small reaction-time grace
+  if (inZone) {
+    m.lock = 0.5; m.hitU = m.u; m.flash = 1; sfx.hit(); buzz(30);
+    stars(L.mBarX + m.u * L.mBarW, L.mBarY, 8, ['#FFD43B', '#FFFFFF', S.cur.c.body], .8);
+  } else fleeCurrent();
+}
+/* a tap outside the zone: the fish wiggles "bye-bye" and swims away; a new fish comes later */
+function fleeCurrent() {
+  const f = S.cur, m = S.m;
+  m.closing = true; m.missU = m.u;
+  f.state = 'flee'; f.fleeT = 0; f.fy = f.y; f.exitDir = f.x < W / 2 ? -1 : 1; f.fleeV = 0;
+  const mo = mouthOf(f); drops(mo.x, mo.y - f.r * .2, 6); bubbles(mo.x, mo.y, 8); ripple(f.x, f.y);
+  sfx.flee();
+  S.cur = null; S.flees++; S.fleeStreak++; S.wave = 1.4;   // the fisher waves bye-bye
+  if (S.prompt && S.prompt.c.id === f.c.id) S.prompt.t = Math.min(S.prompt.t, 0.5);
+  // gentle safety net: after several fish swim away in a row, things get a bit easier
+  if (S.fleeStreak % FLEE_EASE_STREAK === 0) { S.skill = Math.max(0, S.skill - FLEE_EASE); settings.skill = S.skill; save(); }
+  setMode('idle');
+  topUpFish(2.2);
+}
+function startReel() {
+  const f = S.cur; setMode('reel');
+  f.state = 'reel'; f.from = {x: f.x + f.dx, y: f.y, rot: f.rot}; f.dx = 0;
+  f.to = danglePose(f); S.bob.from = {x: S.bob.x, y: S.bob.y};
+  sfx.reel(); bubbles(f.x, f.y, 6);
+  if (S.m) S.m.closing = true;
+}
+function tryDrop(px, py) {
+  const f = S.cur; if (!f) return;
+  if (inBucketZone(px, py) || inBucketZone(f.x, f.y)) {
+    setMode('drop'); f.state = 'drop'; f.from = {x: f.x, y: f.y, rot: f.rot};
+    S.hover = false; S.hoverT = 0; sfx.pickUp();
+  } else {
+    S.dragMiss++; f.state = 'back'; f.from = {x: f.x, y: f.y, rot: f.rot}; setMode('back'); sfx.floatBack();
+    if (S.dragMiss >= 2) S.bucketBoost = Math.min(1.35, S.bucketBoost + 0.15);
+  }
+}
+function inBucketZone(x, y) {
+  const k = S.bucketBoost, hw = L.bw * 0.5 * 1.5 * k;
+  return x > L.bx - hw && x < L.bx + hw && y > L.bTop - L.bh * 1.0 * k && y < L.bBot + L.bh * 0.3;
+}
+function finishCatch() {
+  const f = S.cur, match = !!(S.prompt && S.prompt.c.id === f.c.id);
+  S.count++; if (match) S.matches++;
+  S.recent.push(f.c); if (S.recent.length > 5) S.recent.shift();
+  S.fish = S.fish.filter(o => o !== f); S.cur = null; S.m = null;
+  S.caught.push({c: f.c, model: f.model});
+  S.bucketBounce = 1; sfx.splash(); drops(L.bx, L.bTop, 8);
+  if (match) {
+    sfx.bigCelebrate(f.c); buzz([30, 60, 30, 60, 40]);
+    stars(L.bx, L.bTop - L.bh * .2, 16, ['#FFD43B', '#FFFFFF', f.c.body, f.c.light], 1.4);
+    S.prompt = null;
+  } else {
+    sfx.celebrate(f.c); buzz(35);
+    stars(L.bx, L.bTop - L.bh * .2, 6, ['#FFD43B', f.c.body], 1); bubbles(L.bx, L.bTop, 4);
+    if (S.prompt) { S.prompt.left--; if (S.prompt.left <= 0) S.prompt = null; }
+  }
+  // milestones: gentle, play never stops
+  // (no numbers are ever shown; the bucket hops invitingly so a parent can say "let's count!")
+  if (S.count % 10 === 0) { S.rainbow = 6; sfx.milestone10(); buzz([20, 60, 20, 60, 20]); S.hopQ = 1.0;
+    stars(L.bx, L.bTop - L.bh * .3, 14, ['#FFD43B', '#FF9AA0', '#A6D8FF', '#A2F2C6'], 1.3); }
+  else if (S.count % 5 === 0) { sfx.milestone5(); S.hopQ = 1.0; stars(L.bx, L.bTop - L.bh * .3, 10, ['#FFD43B', '#FFFFFF'], 1.1); }
+  if (S.count === 1 && !S.bucketTapped) { S.hopQ = 1.6; S.hopHand = true; }   // one-time "tap me" hint
+  // every catch nudges the difficulty up (smoothly approaching its floor/ceiling)
+  S.skill += SKILL_PER_CATCH; S.fleeStreak = 0;
+  settings.skill = S.skill; settings.best = Math.max(settings.best || 0, S.count); save();
+  setMode('idle'); topUpFish();
+  setTimeout(() => { if (S.mode === 'idle') maybePrompt(); }, 1400);
+}
+
+/* ---------- input ---------- */
+const ctlEl = document.getElementById('ctl');
+cv.addEventListener('pointerdown', e => {
+  e.preventDefault();
+  if (!e.isPrimary && S.ptr.down) return;
+  audioInit();
+  const x = e.clientX, y = e.clientY; S.idleT = 0;
+  const p = S.ptr;
+  // hold-to-exit home button (a parent control: needs a 1.2s press, toddler taps do nothing)
+  if (S.mode !== 'start' && dist(x, y, L.homeX, L.homeY) < L.homeR * 1.35 && !p.down) { S.home = {id: e.pointerId, t: 0}; return; }
+  switch (S.mode) {
+    case 'start': if (dist(x, y, W / 2, startBtnY()) < startBtnR() * 1.4) { sfx.bloop(); startPlay(); } else { ripple(x, y); sfx.bloop(); } break;
+    case 'idle': {
+      if (bucketHit(x, y)) { if (S.caught.length) { S.bucketTapped = true; S.hopHand = false; } enterCount(); break; }
+      if (fisherHit(x, y)) { S.wave = 1.2; note(660, {from: 520, glide: .12, dur: .2, vol: .1}); note(880, {from: 700, glide: .12, dur: .22, vol: .08, when: .14}); buzz(10); break; }
+      const best = pickFishAt(x, y);   // precise: only where a fish is actually drawn
+      if (best) selectFish(best);
+      else {
+        if (y > L.waterTop) { ripple(x, y); bubbles(x, y, 3); sfx.bloop(); }
+        S.idleMiss++;
+        if (S.idleMiss >= 3) { S.slowT = 12; S.idleMiss = 0; }
+      }
+      break; }
+    case 'count': countTap(x, y); break;
+    case 'meter':
+      if (meterArea(x, y)) meterTap();
+      else if (S.cur && fishHit(S.cur, x, y)) { S.cur.wig = 1; sfx.bloop(); } // tapping the fish itself: just a giggle
+      break;
+    case 'dangle': {
+      const f = S.cur;
+      if (fishHit(f, x, y)) {
+        p.down = true; p.id = e.pointerId; p.x = x; p.y = y; p.offX = f.x - x; p.offY = f.y - y;
+        f.state = 'drag'; setMode('drag'); sfx.pickUp(); buzz(12);
+        try { cv.setPointerCapture(e.pointerId); } catch (_) {}
+      }
+      break; }
+  }
+}, {passive: false});
+cv.addEventListener('pointermove', e => {
+  if (!S.ptr.down || e.pointerId !== S.ptr.id) return;
+  S.ptr.x = e.clientX; S.ptr.y = e.clientY;
+}, {passive: true});
+function endPointer(e) {
+  if (S.home && S.home.id === e.pointerId) S.home = null;
+  if (!S.ptr.down || e.pointerId !== S.ptr.id) return;
+  S.ptr.down = false;
+  if (S.mode === 'drag') tryDrop(S.ptr.x, S.ptr.y);
+}
+cv.addEventListener('pointerup', endPointer); cv.addEventListener('pointercancel', endPointer);
+cv.addEventListener('lostpointercapture', endPointer);
+// no scrolling, pull-to-refresh, pinch/double-tap zoom, long-press menus or selection
+const stop = e => { if (e.cancelable) e.preventDefault(); };
+document.addEventListener('touchmove', stop, {passive: false});
+document.addEventListener('gesturestart', stop, {passive: false});
+document.addEventListener('dblclick', stop, {passive: false});
+document.addEventListener('contextmenu', stop);
+document.addEventListener('selectstart', stop);
+let lastTouchEnd = 0;
+document.addEventListener('touchend', e => { const n = Date.now(); if (n - lastTouchEnd < 350) stop(e); lastTouchEnd = n; }, {passive: false});
+document.addEventListener('visibilitychange', () => {
+  if (document.hidden) { if (AC && AC.state === 'running') AC.suspend(); }
+  else { last = performance.now(); if (S.mode !== 'start') { audioInit(); keepAwake(); } }
+});
+
+// parent controls (visible on the start screen only)
+const bS = document.getElementById('bSound'), bV = document.getElementById('bVib');
+function syncCtl() { bS.classList.toggle('off', !settings.sound); bV.classList.toggle('off', !settings.vib);
+  document.getElementById('sw').style.display = settings.sound ? '' : 'none'; if (master) master.gain.value = settings.sound ? .55 : 0; }
+for (const b of [bS, bV]) b.addEventListener('pointerdown', e => e.stopPropagation());
+bS.addEventListener('pointerup', e => { e.stopPropagation(); settings.sound = !settings.sound; save(); audioInit(); syncCtl(); if (settings.sound) sfx.bloop(); });
+bV.addEventListener('pointerup', e => { e.stopPropagation(); settings.vib = !settings.vib; save(); syncCtl(); buzz(25); });
+if (!navigator.vibrate) bV.style.display = 'none';
+syncCtl();
+
+/* ---------- update ---------- */
+function update(dt) {
+  S.t += dt; S.modeT += dt; S.idleT += dt;
+  if (S.slowT > 0) S.slowT -= dt;
+  const slowK = (S.slowT > 0 ? 0.6 : 1) * (S.mode === 'count' ? 0.3 : 1);
+  for (const c of S.clouds) { c.x += c.v * dt; if (c.x > 1.25) c.x = -.25; }
+  if (Math.random() < dt * 0.6) bubbles(rand(0, W), L.sandY, 1);
+  if (S.rainbow > 0) S.rainbow -= dt;
+  if (S.hopQ > 0) { S.hopQ -= dt; if (S.hopQ <= 0 && S.mode !== 'count') { S.bucketHop = 1.6; S.hopQ = 0; } }
+  if (S.bucketHop > 0) { S.bucketHop -= dt; if (S.bucketHop <= 0) S.hopHand = false; }
+  S.bucketWobble = Math.max(0, S.bucketWobble - dt * 1.3);
+  updateCount(dt);
+  if (S.home) { S.home.t += dt; if (S.home.t >= 1.2) goHome(); }
+
+  if (S.mode !== 'start' && S.mode !== 'count') {
+    for (const q of S.spawnQ) q.t -= dt;
+    while (S.spawnQ.length && S.spawnQ[0].t <= 0) { S.spawnQ.shift(); if (activeFish().length < 6) spawnFish(); }
+    if (S.prompt && !activeFish().some(f => f.c.id === S.prompt.c.id)) spawnFish({color: S.prompt.c, model: S.prompt.model});
+    if (S.prompt) S.prompt.t += dt;
+  }
+
+  for (const f of S.fish) {
+    f.tail += dt * (f.state === 'dangle' || f.state === 'drag' ? 9 : f.state === 'hooked' ? 7 : f.state === 'flee' ? 14 : 4) * MOT;
+    if (f.wig) f.wig = Math.max(0, f.wig - dt * 2.5);
+    if (f.state === 'swim') {
+      f.x += f.dir * f.speed * slowK * dt;
+      const m = f.r * 1.4;
+      if (f.x > W - m && f.dir > 0 && f.x < W + f.r) f.dir = -1;
+      else if (f.x < m && f.dir < 0 && f.x > -f.r) f.dir = 1;
+      f.turnT -= dt; if (f.turnT <= 0) { f.turnT = rand(7, 14); if (f.x > W * .25 && f.x < W * .75) f.dir *= -1; }
+      f.y = lerp(f.y, f.baseY + Math.sin(S.t * .8 + f.ph) * f.r * 0.12 * MOT, Math.min(1, dt * 2));
+      f.face += (f.dir - f.face) * Math.min(1, dt * 3.5);
+      f.rot = Math.sin(S.t * .8 + f.ph) * 0.05 * MOT;
+    } else if (f.state === 'hooked') {
+      f.x = lerp(f.x, f.hookX, Math.min(1, dt * 2.6)); f.y = lerp(f.y, f.hookY, Math.min(1, dt * 2.6));
+      f.face += ((f.hookFace || (f.face >= 0 ? 1 : -1)) - f.face) * Math.min(1, dt * 4);
+      f.dx = Math.sin(S.t * 5) * f.r * 0.05 * MOT * f.face + (f.wig ? Math.sin(S.t * 30) * f.wig * f.r * .05 : 0);
+      f.rot = Math.sin(S.t * 5) * 0.04 * MOT;
+    } else if (f.state === 'flee') {
+      f.fleeT += dt;
+      if (f.fleeT < 0.6) {                             // little "bye-bye" wiggle + hop, turning toward the exit
+        const k = f.fleeT / 0.6;
+        f.rot = Math.sin(f.fleeT * 26) * 0.22 * (1 - k * .5) * MOT;
+        f.y = f.fy - Math.sin(k * Math.PI) * f.r * 0.3;
+        f.face += (f.exitDir - f.face) * Math.min(1, dt * 7); f.dx *= 0.8;
+      } else {                                         // then zoom away, trailing bubbles
+        f.fleeV = Math.min(U * 1.7, f.fleeV + U * 4 * dt);
+        f.x += f.exitDir * f.fleeV * dt; f.rot = Math.sin(S.t * 18) * 0.06; f.face = f.exitDir;
+        if (Math.random() < dt * 14) bubbles(f.x - f.exitDir * f.r, f.y, 1);
+      }
+    }
+  }
+  S.fish = S.fish.filter(f => !(f.state === 'flee' && (f.x < -f.r * 2.5 || f.x > W + f.r * 2.5)));
+
+  if (S.m) {
+    const m = S.m; m.age += dt;
+    if (m.closing) { m.show = Math.max(0, m.show - dt / .35); if (m.show <= 0 && S.m === m) S.m = null; }
+    m.flash = Math.max(0, m.flash - dt * 1.5);
+  }
+
+  S.boatBob = Math.sin(S.t * 1.3) * 3 * MOT; S.boatTilt = Math.sin(S.t * 1.05) * .012 * MOT;
+  if (S.wave > 0) S.wave = Math.max(0, S.wave - dt);
+  const b = S.bob, maxX = W - L.safe.r - L.bobR - 6, restX = L.restBobX + Math.sin(S.t * .7) * 3 * MOT;
+  const floatAt = (x, dip) => { b.x = clamp(x, L.bobMin, maxX); b.dip = dip; b.surf = surfY(b.x); b.y = b.surf + dip; b.onWater = true; };
+  const hangBait = k => { b.hx = lerp(b.hx, b.x + Math.sin(S.t * 1.3) * 2 * MOT, k); b.hy = lerp(b.hy, b.y + L.baitLen, k); };
+  b.onWater = false;
+  if (!b.x) { b.x = restX; b.hx = restX; b.hy = L.waterTop + L.baitLen; }
+  const holding = S.mode === 'reel' || S.mode === 'dangle' || S.mode === 'drag' || S.mode === 'back' || S.mode === 'drop';
+  b.bait = holding ? Math.max(0, b.bait - dt * 5) : Math.min(1, b.bait + dt * 2.2);   // the fish has the worm; a fresh one pops on afterwards
+  switch (S.mode) {
+    case 'start': case 'idle': case 'count': {
+      // the float rests on the water by the boat; the baited hook hangs a little way below it
+      floatAt(lerp(b.x, restX, Math.min(1, dt * 2.5)), 0);
+      hangBait(Math.min(1, dt * 4));
+      break; }
+    case 'hook': {
+      // 1) the float slides along the surface to above the fish, 2) the baited hook sinks from the float to the fish's mouth
+      const f = S.cur, T1 = .45, T = 1.0, t = S.modeT, mo = mouthOf(f), e1 = easeIO(clamp(t / T1, 0, 1));
+      floatAt(lerp(f.hookFrom.x, f.bobX, e1), t > T - .2 ? Math.max(0, Math.sin((t - T + .2) * 22)) * 3 * MOT : 0);
+      if (t < T1) { b.hx = lerp(f.hookFrom.hx, b.x, e1); b.hy = lerp(f.hookFrom.hy, b.y + L.baitLen, e1); }
+      else { const e2 = easeIO(clamp((t - T1) / (T - T1), 0, 1)); b.hx = lerp(b.x, mo.x, e2); b.hy = lerp(b.y + L.baitLen, mo.y, e2); }
+      if (t >= T) { setMode('meter'); bubbles(mo.x, mo.y, 3); }
+      break; }
+    case 'meter': {
+      const f = S.cur, m = S.m, mo = mouthOf(f);
+      // nibble: the float dips and jiggles on the surface (the classic bite signal); the bait stays at the fish's mouth
+      floatAt(f.bobX + Math.sin(S.t * 9) * 1.2 * MOT, (Math.max(0, Math.sin(S.t * 5)) * 6 + Math.max(0, Math.sin(S.t * 13)) * 1.5) * MOT);
+      b.hx = mo.x; b.hy = mo.y;
+      m.show = Math.min(1, m.show + dt / .45);
+      if (m.lock > 0) { m.lock -= dt; m.u = m.hitU; if (m.lock <= 0) startReel(); }
+      else {
+        m.phase += dt / m.period;
+        m.u = 0.5 - 0.5 * Math.cos(TAU * m.phase);
+        if (Math.abs(m.u - m.zc) <= m.zw / 2) m.lastIn = S.t;
+      }
+      m.glowBtn = lerp(m.glowBtn, Math.abs(m.u - m.zc) <= m.zw / 2 ? 1 : 0, Math.min(1, dt * 6));
+      break; }
+    case 'reel': {
+      const f = S.cur, t = clamp(S.modeT / 1.15, 0, 1), e = easeIO(t);
+      const prevY = f.y;
+      f.x = lerp(f.from.x, f.to.x, e); f.y = lerp(f.from.y, f.to.y, e) - Math.sin(t * Math.PI) * U * .04;
+      f.face += (f.to.face - f.face) * Math.min(1, dt * 5); f.rot = lerp(f.from.rot, f.to.rot, e) + Math.sin(S.t * 9) * 0.12 * MOT * (1 - e);
+      if (prevY > L.waterTop && f.y <= L.waterTop) { drops(f.x, L.waterTop, 10); ripple(f.x, L.waterTop + 5); sfx.splash(); }
+      const mo = mouthOf(f); b.hx = mo.x; b.hy = mo.y;
+      const ol = bobOnLine(b), bf = b.from || ol; b.x = lerp(bf.x, ol.x, e); b.y = lerp(bf.y, ol.y, e);   // the float comes up with the fish
+      if (t >= 1) { f.state = 'dangle'; setMode('dangle'); }
+      break; }
+    case 'dangle': {
+      const f = S.cur; f.x = lerp(f.x, f.to.x, Math.min(1, dt * 4)); f.y = lerp(f.y, f.to.y + S.boatBob + Math.sin(S.t * 2) * 2 * MOT, Math.min(1, dt * 4));
+      f.face += (f.to.face - f.face) * Math.min(1, dt * 4); f.rot = f.to.rot + Math.sin(S.t * 2.2) * 0.08 * MOT;
+      const mo = mouthOf(f); b.hx = mo.x; b.hy = mo.y; Object.assign(b, bobOnLine(b));
+      if (S.modeT > .6 && Math.random() < dt * .8) drops(f.x, f.y + f.r * .4, 1);
+      break; }
+    case 'drag': {
+      const f = S.cur, k = 1 - Math.exp(-dt * 22), nx = S.ptr.x + S.ptr.offX, ny = S.ptr.y + S.ptr.offY;
+      const vx = (nx - f.x); f.x = lerp(f.x, nx, k); f.y = lerp(f.y, ny, k);
+      f.rot = lerp(f.rot, f.to.rot * .4 + clamp(vx * 0.01, -.35, .35), Math.min(1, dt * 8)); f.face += (f.to.face - f.face) * Math.min(1, dt * 4);
+      const mo = mouthOf(f); b.hx = mo.x; b.hy = mo.y; Object.assign(b, bobOnLine(b));
+      const over = inBucketZone(f.x, f.y) || inBucketZone(S.ptr.x, S.ptr.y);
+      S.hover = over;
+      if (over) { S.hoverT += dt; if (S.hoverT > .7) { S.ptr.down = false; tryDrop(S.ptr.x, S.ptr.y); } } else S.hoverT = 0;
+      break; }
+    case 'back': {
+      const f = S.cur, t = clamp(S.modeT / .6, 0, 1), e = easeOut(t);
+      f.x = lerp(f.from.x, f.to.x, e); f.y = lerp(f.from.y, f.to.y, e); f.rot = lerp(f.from.rot, f.to.rot, e);
+      const mo = mouthOf(f); b.hx = mo.x; b.hy = mo.y; Object.assign(b, bobOnLine(b));
+      if (t >= 1) { f.state = 'dangle'; setMode('dangle'); }
+      break; }
+    case 'drop': {
+      // the fish lets go into the bucket; the float drops back onto the water and the hook hangs below it again
+      const f = S.cur, t = clamp(S.modeT / .55, 0, 1), e = easeIO(t);
+      f.x = lerp(f.from.x, L.bx, e); f.y = lerp(f.from.y, L.bTop + L.bh * .1, e) - Math.sin(t * Math.PI) * U * .05;
+      f.rot = lerp(f.from.rot, f.face < 0 ? -Math.PI / 2 : Math.PI / 2, e); f.scale = lerp(1, .55, e);   // head first into the bucket
+      const k = Math.min(1, dt * 8); b.x = lerp(b.x, restX, k); b.y = lerp(b.y, surfY(b.x), k); hangBait(k);
+      if (t >= 1) finishCatch();
+      break; }
+  }
+  // a mode can change inside this frame (e.g. the catch finishes): whenever we're fishing, the float is on the water
+  if (!b.onWater && (S.mode === 'start' || S.mode === 'idle' || S.mode === 'count' || S.mode === 'hook' || S.mode === 'meter')) floatAt(b.x, 0);
+  S.bucketBounce = Math.max(0, S.bucketBounce - dt * 1.6);
+
+  for (const p of S.parts) {
+    p.life += dt; p.x += p.vx * dt; p.y += p.vy * dt; p.rot += p.vr * dt;
+    if (p.type === 'star') { p.vx *= (1 - dt * 1.5); p.vy = p.vy * (1 - dt * 1.5) + 20 * dt; }
+    if (p.type === 'drop') p.vy += p.g * dt;
+    if (p.type === 'bubble') { p.x += Math.sin(p.life * 4) * 10 * dt; if (p.y < L.waterTop) p.life = p.max; }
+    if (p.type === 'ripple') p.size += 60 * dt;
+  }
+  S.parts = S.parts.filter(p => p.life < p.max);
+}
+/* out of the water the float is reeled up to just below the rod tip (so the hanging fish never hides it) */
+function bobOnLine(b) { const tp = boatPt(L.tipX, L.tipY), dx = b.hx - tp.x, dy = b.hy - tp.y, len = Math.hypot(dx, dy) || 1;
+  const d = Math.min(len * .45, L.bobR * 2.2); return {x: tp.x + dx * d / len, y: tp.y + dy * d / len + L.bobR * 1.75 * Math.min(1, d / (L.bobR * 2.2))}; }
+
+/* ---------- drawing ---------- */
+function drawScene() {
+  ctx.drawImage(bg, 0, 0, W, H);
+  if (S.rainbow > 0) {                         // milestone rainbow: fades in and out softly, sky only
+    const t = 6 - S.rainbow, a = Math.min(1, t / 1.2, S.rainbow / 1.8) * .5;
+    ctx.save(); ctx.beginPath(); ctx.rect(0, 0, W, L.waterTop + 4); ctx.clip(); ctx.globalAlpha = a;
+    const R = Math.min(W * .5, (L.waterTop - L.safe.t) * 1.15), cx = W * .5, cy = L.waterTop + 4, bw = R * .075;
+    ['#FF5A5F', '#FF9F1C', '#FFD43B', '#3DDC84', '#3FA9F5', '#A86CFF'].forEach((c, i) => {
+      ctx.strokeStyle = c; ctx.lineWidth = bw + 1; ctx.beginPath(); ctx.arc(cx, cy, R - i * bw, Math.PI, TAU); ctx.stroke(); });
+    ctx.restore();
+  }
+  for (const c of S.clouds) {
+    const x = c.x * W, y = L.safe.t + c.y * (L.waterTop - L.safe.t), s = c.s * U * .065;
+    ctx.fillStyle = 'rgba(255,255,255,.92)'; ctx.beginPath();
+    ctx.arc(x, y, s, 0, TAU); ctx.arc(x + s * 1.1, y + s * .2, s * .8, 0, TAU); ctx.arc(x - s * 1.1, y + s * .25, s * .75, 0, TAU);
+    ctx.arc(x + s * .3, y - s * .45, s * .75, 0, TAU); ctx.fill();
+  }
+  // animated wave edge
+  ctx.fillStyle = '#5CCBFA'; ctx.beginPath(); ctx.moveTo(0, L.waterTop + 8);
+  for (let x = 0; x <= W + 24; x += 24) ctx.lineTo(x, L.waterTop + Math.sin(x * .02 + S.t * 1.2 * MOT) * 4);
+  ctx.lineTo(W, L.waterTop + 8); ctx.closePath(); ctx.fill();
+  // seaweed
+  ctx.lineCap = 'round'; ctx.lineWidth = U * .022;
+  for (const w of S.weeds) {
+    ctx.strokeStyle = w.c; ctx.beginPath(); ctx.moveTo(w.x, L.sandY + 6);
+    for (let i = 1; i <= 5; i++) ctx.lineTo(w.x + Math.sin(S.t * .9 * MOT + w.ph + i * .7) * i * 2.4, L.sandY - w.h * i / 5);
+    ctx.stroke();
+  }
+}
+function drawLine() {
+  const b = S.bob, tp = boatPt(L.tipX, L.tipY), r = L.bobR, s = L.hookS;
+  const top = {x: b.x, y: b.y - r * 1.75}, bot = {x: b.x, y: b.y + r * .9};
+  // rod tip -> float: slack line with a gentle sag
+  const dx = top.x - tp.x, dy = top.y - tp.y, d = Math.hypot(dx, dy) || 1, sag = Math.min(d * .2, U * .06) * Math.abs(dx) / d;
+  ctx.strokeStyle = 'rgba(40,40,60,.72)'; ctx.lineWidth = 1.8; ctx.lineCap = 'round';
+  ctx.beginPath(); ctx.moveTo(tp.x, tp.y); ctx.quadraticCurveTo((tp.x + top.x) / 2, (tp.y + top.y) / 2 + sag, top.x, top.y); ctx.stroke();
+  // float -> hook: straight line down to the hook eye
+  const eye = {x: b.hx, y: b.hy - s * 1.3};
+  ctx.beginPath(); ctx.moveTo(bot.x, bot.y); ctx.lineTo(eye.x, eye.y); ctx.stroke();
+  // hook
+  ctx.strokeStyle = '#7d8a99'; ctx.lineWidth = Math.max(2, s * .32);
+  ctx.beginPath(); ctx.moveTo(eye.x, eye.y); ctx.lineTo(b.hx, b.hy); ctx.arc(b.hx - s * .55, b.hy, s * .55, 0, Math.PI); ctx.lineTo(b.hx - s * 1.1, b.hy - s * .55); ctx.stroke();
+  // bait: a little pink worm wrapped on the hook (wiggles; pops back on after a catch)
+  if (b.bait > .02) {
+    const k = b.bait < 1 ? b.bait * (1 + Math.sin(b.bait * Math.PI) * .3) : 1, w = Math.sin(S.t * 6) * .3 * MOT;
+    ctx.save(); ctx.translate(b.hx - s * .55, b.hy + s * .15); ctx.scale(k, k);
+    ctx.strokeStyle = '#FF7AA2'; ctx.lineWidth = s * 1.1; ctx.lineCap = 'round';
+    ctx.beginPath(); ctx.moveTo(-s * 1.7, -s * .5 + w * s); ctx.quadraticCurveTo(-s * .9, s * 1.4, 0, s * .45); ctx.quadraticCurveTo(s * .9, -s * .4, s * 1.6, s * .55 - w * s); ctx.stroke();
+    ctx.strokeStyle = 'rgba(200,60,110,.55)'; ctx.lineWidth = Math.max(1, s * .16);
+    for (const q of [-.55, .5]) { ctx.beginPath(); ctx.moveTo(q * s * 1.6 - s * .15, s * .3); ctx.lineTo(q * s * 1.6 + s * .15, s * .75); ctx.stroke(); }
+    ctx.fillStyle = '#3a2418'; ctx.beginPath(); ctx.arc(s * 1.75, s * .42 - w * s, s * .2, 0, TAU); ctx.fill();
+    ctx.restore();
+  }
+  // float: red top, white bottom, little stick on top; on the water its lower part is under the surface
+  ctx.save(); ctx.translate(b.x, b.y);
+  ctx.strokeStyle = '#333'; ctx.lineWidth = 2; ctx.beginPath(); ctx.moveTo(0, -r * 1.75); ctx.lineTo(0, -r * 1.1); ctx.stroke();
+  const body = () => { ctx.beginPath(); ctx.ellipse(0, -r * .2, r, r * 1.1, 0, 0, TAU); };
+  ctx.fillStyle = '#FFFFFF'; body(); ctx.fill();
+  ctx.save(); body(); ctx.clip(); ctx.fillStyle = '#FF4D6D'; ctx.fillRect(-r * 1.2, -r * 1.5, r * 2.4, r * 1.25);
+  if (b.onWater) { ctx.fillStyle = 'rgba(40,130,210,.5)'; ctx.fillRect(-r * 1.2, 0, r * 2.4, r * 1.2); }
+  ctx.restore();
+  ctx.strokeStyle = 'rgba(0,0,0,.22)'; ctx.lineWidth = 1.5; body(); ctx.stroke();
+  if (b.onWater) {   // little rings where the float meets the water (bigger while the fish nibbles)
+    ctx.strokeStyle = 'rgba(255,255,255,.7)'; ctx.lineWidth = 1.5;
+    ctx.beginPath(); ctx.ellipse(0, 1, r * 1.5 + b.dip * .6, r * .32, 0, 0, TAU); ctx.stroke();
+    if (b.dip > 1) { ctx.globalAlpha = .45; ctx.beginPath(); ctx.ellipse(0, 1, r * 2.2 + b.dip * 1.2, r * .45, 0, 0, TAU); ctx.stroke(); }
+  }
+  ctx.restore();
+}
+function drawRod() {
+  const c = L.rodC, hx = L.handX, hy = L.handY;
+  ctx.strokeStyle = '#8B5A2B'; ctx.lineCap = 'round'; ctx.lineWidth = Math.max(4, U * .013);
+  ctx.beginPath(); ctx.moveTo(hx - (c.x - hx) * .16, hy - (c.y - hy) * .16); ctx.lineTo(hx, hy); ctx.quadraticCurveTo(c.x, c.y, L.tipX, L.tipY); ctx.stroke();
+  ctx.fillStyle = '#5a6470'; ctx.beginPath(); ctx.arc(hx - (c.x - hx) * .08, hy - (c.y - hy) * .08 + U * .012, Math.max(5, U * .016), 0, TAU); ctx.fill();   // reel
+  ctx.fillStyle = '#FF4D6D'; ctx.beginPath(); ctx.arc(L.tipX, L.tipY, Math.max(2.5, U * .007), 0, TAU); ctx.fill();
+}
+function hullPath() {
+  const h = L.boatH, x0 = L.x0, x1 = L.x1, g = L.gunY, yb = L.hullBot;
+  ctx.beginPath(); ctx.moveTo(x0 - h * .25, g - h * .05); ctx.lineTo(x1 + h * .45, g - h * .25);
+  ctx.quadraticCurveTo(x1 + h * .15, yb, x1 - h * .7, yb); ctx.lineTo(x0 + h * .55, yb);
+  ctx.quadraticCurveTo(x0 - h * .1, yb - h * .05, x0 - h * .25, g - h * .05); ctx.closePath();
+}
+function drawHullBack() {   // the far inside wall of the boat (the bucket and the fisher sit in front of it)
+  const h = L.boatH, x0 = L.x0, x1 = L.x1, g = L.gunY;
+  ctx.fillStyle = '#D9583A'; ctx.beginPath(); ctx.moveTo(x0 - h * .25, g - h * .05); ctx.lineTo(x0 - h * .1, g - h * .36);
+  ctx.lineTo(x1 + h * .3, g - h * .55); ctx.lineTo(x1 + h * .45, g - h * .25); ctx.closePath(); ctx.fill();
+  ctx.strokeStyle = '#FFE7CC'; ctx.lineWidth = h * .1; ctx.lineCap = 'round';
+  ctx.beginPath(); ctx.moveTo(x0 - h * .1, g - h * .36); ctx.lineTo(x1 + h * .3, g - h * .55); ctx.stroke();
+}
+function drawHullFront() {
+  const h = L.boatH, x0 = L.x0, x1 = L.x1, g = L.gunY;
+  hullPath(); ctx.fillStyle = '#FF7A59'; ctx.fill();
+  ctx.save(); hullPath(); ctx.clip();
+  ctx.fillStyle = '#FFFFFF'; ctx.beginPath(); ctx.moveTo(x0 - h, g + h * .2); ctx.lineTo(x1 + h, g + h * .2 - (x1 - x0 + 2 * h) * (h * .2) / (x1 - x0 + h * .7));
+  ctx.lineTo(x1 + h, g + h * .36 - (x1 - x0 + 2 * h) * (h * .2) / (x1 - x0 + h * .7)); ctx.lineTo(x0 - h, g + h * .36); ctx.closePath(); ctx.fill();
+  star(x0 + (x1 - x0) * .5, g + h * .55, h * .16, '#FFD43B');
+  ctx.fillStyle = 'rgba(30,110,200,.33)'; ctx.fillRect(x0 - h, L.waterTop + 3, x1 - x0 + 2 * h, h);   // the part under the water
+  ctx.restore();
+  ctx.strokeStyle = '#FFE7CC'; ctx.lineWidth = h * .14; ctx.lineCap = 'round';
+  ctx.beginPath(); ctx.moveTo(x0 - h * .25, g - h * .05); ctx.lineTo(x1 + h * .45, g - h * .25); ctx.stroke();
+}
+/* the fisher: a friendly bear cub in a yellow sun hat and an orange life vest */
+function drawFisher() {
+  const R = L.fR, x = L.fx, base = L.deckY, fh = L.fh, fur = '#C68E5F', furD = '#9A6A43';
+  const happy = S.bucketBounce > .15 || S.mode === 'reel' || S.mode === 'dangle' || S.mode === 'count';
+  const excited = S.mode === 'hook' || S.mode === 'meter';
+  const jump = S.bucketBounce > 0 ? -Math.sin(S.bucketBounce * Math.PI) * R * .3 : 0;
+  const hy = base - fh * .64 + Math.sin(S.t * 2.1) * R * .03 * MOT + jump;
+  // body / life vest
+  ctx.fillStyle = '#FF9F43'; rr(ctx, x - R * 1.05, base - fh * .5 + jump * .5, R * 2.1, fh * .62, R * .6); ctx.fill();
+  ctx.fillStyle = '#FFE08A'; rr(ctx, x - R * .72, base - fh * .47 + jump * .5, R * .3, fh * .5, R * .15); ctx.fill(); rr(ctx, x + R * .42, base - fh * .47 + jump * .5, R * .3, fh * .5, R * .15); ctx.fill();
+  // arms: right paw holds the rod, left paw rests (or waves bye-bye after a fish swims away)
+  ctx.strokeStyle = fur; ctx.lineCap = 'round'; ctx.lineWidth = R * .42;
+  const wv = S.wave > 0 ? Math.sin(S.wave * 16) : 0;
+  const lh = S.wave > 0 ? {x: x - R * .75 + wv * R * .25, y: base - fh * 1.0} : {x: x - R * .25, y: base - fh * .16};   // waves straight up (never over the bucket)
+  ctx.beginPath(); ctx.moveTo(x - R * .8, base - fh * .4 + jump * .5); ctx.lineTo(lh.x, lh.y); ctx.stroke();
+  ctx.beginPath(); ctx.moveTo(x + R * .8, base - fh * .4 + jump * .5); ctx.lineTo(L.handX, L.handY); ctx.stroke();
+  ctx.fillStyle = fur; ctx.beginPath(); ctx.arc(lh.x, lh.y, R * .26, 0, TAU); ctx.fill(); ctx.beginPath(); ctx.arc(L.handX, L.handY, R * .27, 0, TAU); ctx.fill();
+  // head
+  ctx.save(); ctx.translate(x, hy); ctx.rotate(excited ? .1 : happy ? -.05 : 0);
+  ctx.fillStyle = fur; ctx.beginPath(); ctx.arc(0, 0, R, 0, TAU); ctx.fill(); ctx.strokeStyle = furD; ctx.lineWidth = R * .06; ctx.stroke();
+  ctx.fillStyle = '#F6DEC4'; ctx.beginPath(); ctx.ellipse(R * .24, R * .32, R * .5, R * .36, 0, 0, TAU); ctx.fill();
+  ctx.fillStyle = '#4a2f22'; ctx.beginPath(); ctx.ellipse(R * .3, R * .14, R * .15, R * .1, 0, 0, TAU); ctx.fill();
+  ctx.fillStyle = 'rgba(255,120,150,.45)'; ctx.beginPath(); ctx.ellipse(-R * .38, R * .25, R * .17, R * .1, 0, 0, TAU); ctx.fill(); ctx.beginPath(); ctx.ellipse(R * .78, R * .22, R * .13, R * .09, 0, 0, TAU); ctx.fill();
+  ctx.strokeStyle = '#3a2418'; ctx.fillStyle = '#3a2418'; ctx.lineWidth = R * .08; ctx.lineCap = 'round';
+  for (const ex of [-R * .14, R * .52]) {
+    if (happy) { ctx.beginPath(); ctx.arc(ex, -R * .02, R * .11, Math.PI * 1.15, Math.PI * 1.85); ctx.stroke(); }
+    else { const er = excited ? R * .14 : R * .11; ctx.beginPath(); ctx.arc(ex, -R * .08, er, 0, TAU); ctx.fill();
+      ctx.fillStyle = '#fff'; ctx.beginPath(); ctx.arc(ex + er * .35, -R * .08 - er * .35, er * .35, 0, TAU); ctx.fill(); ctx.fillStyle = '#3a2418'; }
+  }
+  if (excited) { ctx.beginPath(); ctx.ellipse(R * .3, R * .44, R * .08, R * .1, 0, 0, TAU); ctx.fill(); }
+  else { ctx.beginPath(); ctx.arc(R * .3, R * .3, happy ? R * .18 : R * .13, Math.PI * .15, Math.PI * .85); ctx.stroke(); }
+  // sun hat with little ears poking out
+  ctx.fillStyle = '#FFD43B'; ctx.beginPath(); ctx.moveTo(-R * .84, -R * .5); ctx.bezierCurveTo(-R * .82, -R * 1.38, R * .82, -R * 1.38, R * .84, -R * .5); ctx.closePath(); ctx.fill();
+  for (const sx of [-1, 1]) { ctx.fillStyle = fur; ctx.beginPath(); ctx.arc(sx * R * .55, -R * 1.02, R * .24, 0, TAU); ctx.fill(); ctx.fillStyle = '#F4B6A6'; ctx.beginPath(); ctx.arc(sx * R * .55, -R * 1.0, R * .12, 0, TAU); ctx.fill(); }
+  ctx.fillStyle = '#FF6B6B'; rr(ctx, -R * .82, -R * .7, R * 1.64, R * .18, R * .09); ctx.fill();
+  ctx.fillStyle = '#FFC300'; ctx.beginPath(); ctx.ellipse(0, -R * .52, R * 1.28, R * .24, 0, 0, TAU); ctx.fill();
+  ctx.restore();
+}
+function drawBoatGroup() {
+  withBoat(() => { drawRod(); drawHullBack(); });
+  drawFishLayer(['drop']);
+  withBoat(() => { drawBucket(); drawFisher(); drawHullFront(); });
+}
+function drawBucket() {
+  const bb = S.bucketBounce, k = S.bucketBoost * (1 + Math.sin(bb * Math.PI * 3) * bb * .06);
+  const w = L.bw * k, h = L.bh * k, bx = L.bx, bot = L.bBot, top = bot - h, rim = w * .13;
+  const waiting = S.mode === 'dangle' || S.mode === 'drag' || S.mode === 'back' || S.mode === 'count';
+  ctx.save();
+  if (S.bucketHop > 0) { const t = 1.6 - S.bucketHop; ctx.translate(0, -Math.abs(Math.sin(t / 1.6 * 3 * Math.PI)) * L.bh * .13 * (1 - t / 1.6 * .5) * MOT); }
+  if (S.bucketWobble > 0) { ctx.translate(bx, bot); ctx.rotate(Math.sin(S.bucketWobble * 22) * .12 * S.bucketWobble); ctx.translate(-bx, -bot); }
+  if (waiting || S.hover) {     // soft halo instead of shadowBlur (cheap on phones)
+    const pulse = .5 + .5 * Math.sin(S.t * 2.5) * MOT;
+    ctx.fillStyle = S.hover ? 'rgba(255,240,120,.55)' : `rgba(255,255,200,${.18 + .17 * pulse})`;
+    ctx.beginPath(); ctx.ellipse(bx, top + h * .45, w * .78, h * .78, 0, 0, TAU); ctx.fill();
+  }
+  ctx.strokeStyle = '#90A4AE'; ctx.lineWidth = Math.max(3, w * .035);
+  ctx.beginPath(); ctx.ellipse(bx, top, w * .5, h * .55, 0, Math.PI * 1.08, Math.PI * 1.92); ctx.stroke();
+  ctx.fillStyle = '#1F8FD6'; ctx.beginPath(); ctx.ellipse(bx, top, w / 2, rim, 0, 0, TAU); ctx.fill();
+  S.recent.forEach((c, i) => {
+    const n = S.recent.length, tx = bx + (i - (n - 1) / 2) * w * .17, ty = top + rim * .2, s = w * .11, wv = Math.sin(S.t * 3 + i) * .2 * MOT;
+    ctx.save(); ctx.translate(tx, ty); ctx.rotate(wv); ctx.fillStyle = c.dark;
+    ctx.beginPath(); ctx.moveTo(0, s * .4); ctx.lineTo(-s * .6, -s * .7); ctx.quadraticCurveTo(0, -s * .3, s * .6, -s * .7); ctx.closePath(); ctx.fill(); ctx.restore();
+  });
+  const g = ctx.createLinearGradient(bx - w / 2, 0, bx + w / 2, 0);
+  g.addColorStop(0, '#2EC4D6'); g.addColorStop(.5, '#6FE3EE'); g.addColorStop(1, '#22AFC2');
+  ctx.fillStyle = g; ctx.beginPath(); ctx.moveTo(bx - w / 2, top); ctx.lineTo(bx - w * .39, bot);
+  ctx.quadraticCurveTo(bx, bot + w * .1, bx + w * .39, bot); ctx.lineTo(bx + w / 2, top);
+  ctx.ellipse(bx, top, w / 2, rim, 0, 0, Math.PI, false); ctx.closePath(); ctx.fill();
+  ctx.strokeStyle = '#E8FDFF'; ctx.lineWidth = Math.max(3, w * .04); ctx.beginPath(); ctx.ellipse(bx, top, w / 2, rim, 0, 0, TAU); ctx.stroke();
+  star(bx, top + h * .52, w * .16, '#FFD43B', 0);
+  ctx.restore();
+  if (S.hopHand && S.bucketHop > 0 && S.mode === 'idle') { const ph = (S.t * 1.3) % 1; hand(bx + w * .05, top + h * .35, clamp(U / 700, .6, 1.1), ph < .3 ? Math.sin(ph / .3 * Math.PI) : 0, .85); }
+}
+function drawHome() {
+  // hold-to-exit home button (small, faint; needs a 1.2 s press-and-hold). No counter is shown during play.
+  const hr = L.homeR, hp = S.home ? clamp(S.home.t / 1.2, 0, 1) : 0;
+  ctx.fillStyle = 'rgba(255,255,255,.55)'; ctx.beginPath(); ctx.arc(L.homeX, L.homeY, hr, 0, TAU); ctx.fill();
+  ctx.fillStyle = 'rgba(40,70,100,.55)'; ctx.beginPath();
+  ctx.moveTo(L.homeX, L.homeY - hr * .5); ctx.lineTo(L.homeX + hr * .5, L.homeY - hr * .05); ctx.lineTo(L.homeX + hr * .32, L.homeY - hr * .05);
+  ctx.lineTo(L.homeX + hr * .32, L.homeY + hr * .45); ctx.lineTo(L.homeX - hr * .32, L.homeY + hr * .45); ctx.lineTo(L.homeX - hr * .32, L.homeY - hr * .05);
+  ctx.lineTo(L.homeX - hr * .5, L.homeY - hr * .05); ctx.closePath(); ctx.fill();
+  if (hp > 0) { ctx.strokeStyle = '#3DDC84'; ctx.lineWidth = 4; ctx.beginPath(); ctx.arc(L.homeX, L.homeY, hr + 3, -Math.PI / 2, -Math.PI / 2 + TAU * hp); ctx.stroke(); }
+}
+
+/* ---------- bucket counting ("let's count our fish!") ---------- */
+const LINEUP_CAP = 20, POP_STEP = 0.62, FLY = 0.45;
+function bucketHit(x, y) { return x > L.bx - L.bw * .8 && x < L.bx + L.bw * .76 && y > L.bTop - L.bh * .6 && y < L.hullBot; }   // checked before the bear, so the bear never blocks it
+function fisherHit(x, y) { return Math.abs(x - L.fx) < L.fR * 1.4 && y > L.deckY - L.fh - 6 && y < L.hullBot; }
+function lineupGrid(n) {
+  const sa = L.safe, m = clamp(U * .03, 10, 20), backTop = L.backY - L.backR - m * .8;
+  const areas = [
+    {x0: sa.l + m, x1: W - sa.r - m, y0: L.hullBot + m, y1: backTop},                    // below the boat, full width
+    {x0: Math.max(L.bx + L.bw * .6, L.tipX + 8) + m, x1: W - sa.r - m, y0: sa.t + m, y1: backTop},   // right of the boat, full height
+  ];
+  let best = null;
+  areas.forEach((a, ai) => { const aw = a.x1 - a.x0, ah = a.y1 - a.y0; if (aw < 60 || ah < 40) return;
+    for (let cols = 1; cols <= n; cols++) { const rows = Math.ceil(n / cols), cw = aw / cols, ch = ah / rows, r = Math.min(cw / 3.0, ch / 2.35);
+      // prefer wide, book-like rows (easier to count along); the side area must be clearly bigger to win
+      const score = Math.min(r, U * .1) * (ai === 0 ? 1.15 : 1) * (cols >= Math.min(n, 3) ? 1 : .9);
+      if (!best || score > best.score - .01) best = {r, cols, rows, a, cw, ch, score}; } });
+  const r = Math.min(best.r, U * .1), cw = Math.min(best.cw, r * 3.3), ch = Math.min(best.ch, r * 2.6);
+  const ox = best.a.x0 + (best.a.x1 - best.a.x0 - cw * best.cols) / 2, oy = best.a.y0 + (best.a.y1 - best.a.y0 - ch * best.rows) / 2;
+  const slots = [];
+  for (let i = 0; i < n; i++) { const row = Math.floor(i / best.cols), col = i % best.cols;
+    slots.push({x: ox + (col + .5) * cw + r * .18, y: oy + (row + .5) * ch}); }   // +0.18r: the tail sits left of the body
+  return {r, slots};
+}
+function relayoutLineup() { const lu = S.lineup, g = lineupGrid(lu.items.length); lu.r = g.r; lu.items.forEach((it, i) => { it.x = g.slots[i].x; it.y = g.slots[i].y; }); }
+function enterCount() {
+  if (!S.caught.length) { S.bucketWobble = 1; sfx.empty(); buzz(10); bubbles(L.bx, L.bTop, 2); return; }   // empty: a little wobble
+  const list = S.caught.slice(-LINEUP_CAP);                     // in the order caught (the most recent 20)
+  S.lineup = {items: list.map((it, i) => ({c: it.c, model: it.model, x: 0, y: 0, t: -0.3 - i * POP_STEP, wig: 0, back: 0, ph: rand(0, TAU)})), r: 30, phase: 'out', t: 0};
+  relayoutLineup();
+  S.bucketHop = 0; S.hopQ = 0; S.hopHand = false; S.bucketBounce = .6;
+  setMode('count'); sfx.pickUp(); buzz(12);
+}
+function exitCount() {
+  const lu = S.lineup; if (!lu || lu.phase === 'in') return;
+  lu.items = lu.items.filter(it => it.t > 0);
+  lu.phase = 'in'; lu.t = 0;
+  const n = lu.items.length; lu.items.forEach((it, k) => { it.back = -(n - 1 - k) * Math.min(.07, 1.2 / Math.max(1, n)); });
+  sfx.pickUp();
+  if (!n) finishCountExit();
+}
+function finishCountExit() { S.lineup = null; S.bucketBounce = 1; sfx.intoBucket(); drops(L.bx, L.bTop, 10); buzz(20); setMode('idle'); }
+function itemPose(it) {   // where/how a line-up fish is drawn right now (shared by drawing and the precise tap test)
+  const lu = S.lineup, sx = L.bx, sy = L.bTop + L.bh * .05;
+  let x, y, sc, rot = 0;
+  if (lu.phase === 'out') { if (it.t <= 0) return null; const k = clamp(it.t / FLY, 0, 1), e = easeOut(k);
+    x = lerp(sx, it.x, e); y = lerp(sy, it.y, e) - Math.sin(k * Math.PI) * U * .12; sc = .35 + .65 * easeBack(k); rot = (1 - k) * -1.2; }
+  else { const k = clamp(it.back / FLY, 0, 1); if (k >= 1) return null; const e = easeIO(k);
+    x = lerp(it.x, sx, e); y = lerp(it.y, sy, e) - Math.sin(k * Math.PI) * U * .1; sc = 1 - .6 * e; rot = e * 1.4; }
+  const bob = Math.sin(S.t * 1.6 + it.ph) * lu.r * .05 * MOT;
+  rot += Math.sin(S.t * 24) * .22 * it.wig;
+  return {x, y: y + bob - it.wig * Math.sin(it.wig * Math.PI) * lu.r * .3, o: {model: it.model, tail: S.t * (3 + it.wig * 10) + it.ph, scale: sc, rot}};
+}
+function countTap(x, y) {
+  const lu = S.lineup; if (!lu) return;
+  if (bucketHit(x, y) || dist(x, y, L.backX, L.backY) < L.backR * 1.3) { exitCount(); return; }
+  if (lu.phase !== 'out') return;
+  let best = null, bd = 1e9;
+  for (const it of lu.items) { if (it.t < FLY) continue; const q = itemPose(it); if (q && paintedAt(x, y, q.x, q.y, lu.r, g => drawFish(it.c, q.x, q.y, lu.r, 1, q.o, g))) best = it; }
+  if (best) { best.wig = 1; colorVoice(best.c, .14); bubbles(best.x, best.y, 2); buzz(8); }   // point-and-boop while counting
+}
+function updateCount(dt) {
+  const lu = S.lineup; if (!lu) return;
+  lu.t += dt;
+  if (lu.phase === 'out') {
+    lu.items.forEach((it, i) => { const prev = it.t; it.t += dt;
+      if (prev < 0 && it.t >= 0) { sfx.countPop(i); S.bucketBounce = .5; drops(L.bx, L.bTop, 2); buzz(8); }
+      if (prev < FLY && it.t >= FLY) { ripple(it.x, it.y + S.lineup.r * .4); bubbles(it.x, it.y, 2); } });
+  } else {
+    let done = true;
+    for (const it of lu.items) { it.back += dt; if (it.back < FLY) done = false; }
+    if (done) finishCountExit();
+  }
+  for (const it of lu.items) it.wig = Math.max(0, it.wig - dt * 1.8);
+}
+function drawCount() {
+  const lu = S.lineup; if (!lu) return;
+  const a = lu.phase === 'out' ? Math.min(1, lu.t / .35) : Math.max(0, 1 - lu.t / .5);
+  ctx.fillStyle = `rgba(238,249,255,${.88 * a})`; ctx.fillRect(0, 0, W, H);
+  drawBoatGroup();
+  const sx = L.bx, sy = L.bTop + L.bh * .05;
+  for (const it of lu.items) {
+    const q = itemPose(it); if (!q) continue;
+    drawFish(it.c, q.x, q.y, lu.r, 1, q.o);
+  }
+  // big "back into the bucket" button (bucket icon)
+  if (lu.phase === 'out') {
+    const R = L.backR * (1 + .04 * Math.sin(S.t * TAU / 1.6) * MOT), x = L.backX, y = L.backY, ba = Math.min(1, lu.t / .5);
+    ctx.save(); ctx.globalAlpha = ba;
+    ctx.fillStyle = 'rgba(0,60,120,.15)'; ctx.beginPath(); ctx.arc(x, y + 5, R, 0, TAU); ctx.fill();
+    ctx.fillStyle = '#26C6DA'; ctx.beginPath(); ctx.arc(x, y, R, 0, TAU); ctx.fill();
+    ctx.strokeStyle = '#fff'; ctx.lineWidth = 5; ctx.stroke();
+    const bw = R * .9, bh = R * .7, top = y - bh * .2, rim = bw * .14;
+    ctx.fillStyle = '#fff'; ctx.beginPath(); ctx.moveTo(x - bw / 2, top); ctx.lineTo(x - bw * .38, top + bh); ctx.lineTo(x + bw * .38, top + bh); ctx.lineTo(x + bw / 2, top); ctx.closePath(); ctx.fill();
+    ctx.fillStyle = '#1F8FD6'; ctx.beginPath(); ctx.ellipse(x, top, bw / 2, rim, 0, 0, TAU); ctx.fill();
+    ctx.strokeStyle = '#fff'; ctx.lineWidth = R * .07; ctx.beginPath(); ctx.ellipse(x, top, bw * .5, bh * .6, 0, Math.PI * 1.1, Math.PI * 1.9); ctx.stroke();
+    // little down arrow into the bucket
+    const ay = top - bh * .45 + Math.sin(S.t * 3) * R * .04;
+    ctx.fillStyle = '#FFD43B'; ctx.beginPath(); ctx.moveTo(x, ay + R * .2); ctx.lineTo(x - R * .2, ay - R * .02); ctx.lineTo(x + R * .2, ay - R * .02); ctx.closePath(); ctx.fill();
+    ctx.restore();
+  }
+}
+function drawPrompt() {
+  const p = S.prompt; if (!p) return;
+  const a = easeBack(clamp(p.t / .5, 0, 1)), x = L.pX, y = L.pY + Math.sin(S.t * 1.5) * 3 * MOT, w = L.pW, h = L.pH;
+  ctx.save(); ctx.translate(x, y); ctx.scale(a, a);
+  ctx.fillStyle = 'rgba(0,60,120,.12)'; rr(ctx, -w / 2, -h / 2 + 4, w, h, h * .45); ctx.fill();
+  ctx.fillStyle = '#FFFFFF'; rr(ctx, -w / 2, -h / 2, w, h, h * .45); ctx.fill();
+  ctx.beginPath(); ctx.moveTo(-w * .12, h / 2 - 2); ctx.lineTo(-w * .22, h / 2 + h * .22); ctx.lineTo(w * .02, h / 2 - 2); ctx.fill();
+  const pulse = .5 + .5 * Math.sin(S.t * 2.2);
+  ctx.globalAlpha = .35 + .25 * pulse * MOT; ctx.fillStyle = p.c.light; ctx.beginPath(); ctx.ellipse(0, 0, w * .4, h * .4, 0, 0, TAU); ctx.fill(); ctx.globalAlpha = 1;
+  drawFish(p.c, w * .06, 0, h * .28, 1, {tail: S.t * 4, model: p.model});
+  ctx.restore();
+}
+function drawMeter() {
+  const m = S.m; if (!m || m.show <= 0) return;
+  const off = (1 - easeOut(m.show)) * (L.mPH + 40);
+  ctx.save(); ctx.translate(0, off);
+  ctx.fillStyle = 'rgba(0,40,90,.14)'; rr(ctx, L.mPX, L.mPY + 5, L.mPW, L.mPH, L.mPH * .3); ctx.fill();
+  ctx.fillStyle = 'rgba(255,255,255,.95)'; rr(ctx, L.mPX, L.mPY, L.mPW, L.mPH, L.mPH * .3); ctx.fill();
+  const bx = L.mBarX, by = L.mBarY, bw = L.mBarW, bh = L.mBarH;
+  ctx.fillStyle = '#DDF3FF'; rr(ctx, bx, by, bw, bh, bh / 2); ctx.fill();
+  ctx.strokeStyle = '#9BD3F2'; ctx.lineWidth = 3; ctx.stroke();
+  // target zone with a soft breathing glow (layered halos, no blur filters)
+  const zx = bx + (m.zc - m.zw / 2) * bw, zw = m.zw * bw, pulse = .5 + .5 * Math.sin(S.t * TAU / 1.8) * MOT;
+  for (let i = 2; i >= 1; i--) {
+    const e = i * (4 + 3 * pulse) + m.flash * 8;
+    ctx.fillStyle = `rgba(80,240,160,${(.16 + .1 * pulse) / i + m.flash * .2})`;
+    rr(ctx, zx - e, by + 3 - e, zw + e * 2, bh - 6 + e * 2, (bh - 6) / 2 + e); ctx.fill();
+  }
+  ctx.fillStyle = '#4BE095'; rr(ctx, zx, by + 3, zw, bh - 6, (bh - 6) / 2); ctx.fill();
+  ctx.fillStyle = 'rgba(255,255,255,.35)'; rr(ctx, zx + 4, by + 6, zw - 8, (bh - 12) * .4, (bh - 12) * .2); ctx.fill();
+  ctx.strokeStyle = 'rgba(255,255,255,.95)'; ctx.lineWidth = 3; rr(ctx, zx, by + 3, zw, bh - 6, (bh - 6) / 2); ctx.stroke();
+  drawFish(m.c || COLORS[0], zx + zw / 2, by + bh / 2, Math.min(zw * .2, bh * .27), 1, {tail: S.t * 6, model: m.model});
+  // arrow (pulses gently)
+  const u = m.closing && m.missU != null ? m.missU : m.u;
+  const nx = bx + u * bw, ps = 1 + .09 * Math.sin(S.t * TAU / 1.2) * MOT + m.flash * .15;
+  ctx.save(); ctx.translate(nx, by); ctx.scale(ps, ps);
+  ctx.fillStyle = '#FF4F8B'; ctx.strokeStyle = '#fff'; ctx.lineWidth = 3; ctx.lineJoin = 'round';
+  rr(ctx, -4, -4, 8, bh + 8, 4); ctx.fill(); ctx.stroke();
+  const aw = bh * .42, ah = L.mArrowH * .95;
+  ctx.beginPath(); ctx.moveTo(-aw, -ah); ctx.lineTo(aw, -ah); ctx.lineTo(0, -2); ctx.closePath(); ctx.fill(); ctx.stroke();
+  ctx.restore();
+  // big thumb button; brightens smoothly while the arrow is in the zone
+  const gb = m.glowBtn, bR = L.mBtnR * (1 + .05 * gb + .035 * Math.sin(S.t * TAU / 1.4) * MOT);
+  ctx.fillStyle = `rgba(255,200,60,${.18 + .35 * gb})`; ctx.beginPath(); ctx.arc(L.mBtnX, L.mBtnY, bR + 6 + 6 * gb, 0, TAU); ctx.fill();
+  ctx.fillStyle = gb > .5 ? '#FFB81F' : '#FF9F1C'; ctx.beginPath(); ctx.arc(L.mBtnX, L.mBtnY, bR, 0, TAU); ctx.fill();
+  ctx.fillStyle = `rgba(255,255,255,${.18 + .2 * gb})`; ctx.beginPath(); ctx.ellipse(L.mBtnX - bR * .2, L.mBtnY - bR * .35, bR * .55, bR * .3, -.3, 0, TAU); ctx.fill();
+  ctx.strokeStyle = '#fff'; ctx.lineWidth = 4; ctx.beginPath(); ctx.arc(L.mBtnX, L.mBtnY, bR, 0, TAU); ctx.stroke();
+  ctx.fillStyle = '#fff'; ctx.lineJoin = 'round'; ctx.strokeStyle = '#fff'; ctx.lineWidth = bR * .06;
+  ctx.beginPath(); ctx.moveTo(L.mBtnX, L.mBtnY - bR * .55); ctx.lineTo(L.mBtnX + bR * .45, L.mBtnY - bR * .05); ctx.lineTo(L.mBtnX + bR * .18, L.mBtnY - bR * .05);
+  ctx.lineTo(L.mBtnX + bR * .18, L.mBtnY + bR * .5); ctx.lineTo(L.mBtnX - bR * .18, L.mBtnY + bR * .5); ctx.lineTo(L.mBtnX - bR * .18, L.mBtnY - bR * .05);
+  ctx.lineTo(L.mBtnX - bR * .45, L.mBtnY - bR * .05); ctx.closePath(); ctx.fill(); ctx.stroke();
+  // after a couple of fish swam away: a demo hand presses exactly when the arrow is in the zone
+  if (m.demo && m.lock <= 0 && !m.closing) hand(L.mBtnX + L.mBtnR * .35, L.mBtnY + L.mBtnR * .1, clamp(U / 700, .6, 1.1), gb, .85);
+  ctx.restore();
+}
+function drawParts() {
+  for (const p of S.parts) {
+    const a = 1 - p.life / p.max;
+    if (p.type === 'star') star(p.x, p.y, p.size * (0.6 + .4 * a), p.color, p.rot, Math.min(1, a * 1.6));
+    else if (p.type === 'bubble') { ctx.strokeStyle = `rgba(255,255,255,${.7 * a})`; ctx.lineWidth = 2; ctx.beginPath(); ctx.arc(p.x, p.y, p.size, 0, TAU); ctx.stroke(); }
+    else if (p.type === 'drop') { ctx.fillStyle = `rgba(160,225,255,${a})`; ctx.beginPath(); ctx.arc(p.x, p.y, p.size, 0, TAU); ctx.fill(); }
+    else if (p.type === 'ripple') { ctx.strokeStyle = `rgba(255,255,255,${.6 * a})`; ctx.lineWidth = 3; ctx.beginPath(); ctx.ellipse(p.x, p.y, p.size * 1.6, p.size * .6, 0, 0, TAU); ctx.stroke(); }
+  }
+}
+function drawHints() {
+  const k = clamp(U / 700, .6, 1.1);
+  if (S.mode === 'idle' && S.idleT > 6) {
+    const sw = swimmers().filter(f => f.x > f.r && f.x < W - f.r);
+    const f = (S.prompt && sw.find(o => o.c.id === S.prompt.c.id)) || sw.sort((a, b) => Math.abs(a.x - W / 2) - Math.abs(b.x - W / 2))[0];
+    if (f) { const ph = (S.idleT * 1.2) % 1, press = ph < .3 ? Math.sin(ph / .3 * Math.PI) : 0; hand(f.x + f.r * .15, f.y + f.r * .1, k, press, .85); }
+  }
+  if (S.mode === 'dangle' && (S.modeT > (S.count === 0 ? 1.2 : 4) || S.dragMiss > 0)) {
+    const f = S.cur, cyc = (S.modeT * .55) % 1, t = easeIO(clamp((cyc - .15) / .6, 0, 1));
+    const hx = lerp(f.x, L.bx, t), hy = lerp(f.y, L.bTop - L.bh * .1, t) - Math.sin(t * Math.PI) * U * .05;
+    ctx.setLineDash([8, 10]); ctx.strokeStyle = 'rgba(255,255,255,.75)'; ctx.lineWidth = 4;
+    ctx.beginPath(); ctx.moveTo(f.x, f.y); ctx.quadraticCurveTo((f.x + L.bx) / 2, Math.min(f.y, L.bTop) - U * .08, L.bx, L.bTop - L.bh * .1); ctx.stroke(); ctx.setLineDash([]);
+    hand(hx + 6, hy + 6, k, cyc < .15 || cyc > .75 ? 0 : .6, .8 * Math.min(1, Math.sin(cyc * Math.PI) * 2));
+  }
+}
+function startBtnR() { return clamp(U * .15, 58, 100); }
+function startBtnY() { return L.safe.t + (H - L.safe.t - L.safe.b) * (L.land ? .6 : .6); }
+function drawTitle() {
+  ctx.fillStyle = 'rgba(255,255,255,.5)'; ctx.fillRect(0, 0, W, H);
+  const fs = clamp(Math.min(U * .11, W * .1), 30, 84), top = L.safe.t, ah = H - L.safe.t - L.safe.b;
+  ctx.font = `800 ${fs}px "Baloo 2","Arial Rounded MT Bold","Trebuchet MS",system-ui,sans-serif`; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+  ctx.lineWidth = fs * .16; ctx.strokeStyle = '#fff'; ctx.lineJoin = 'round';
+  // portrait: title just below the boat; landscape: up in the sky, to the right of the rod tip
+  const tw = ctx.measureText('Little Fishing').width;
+  const tx = L.land ? clamp(Math.max(W / 2, L.tipX + 24 + tw / 2), 0, W - L.safe.r - 10 - tw / 2) : W / 2;
+  const ty = (L.land ? top + (L.waterTop - top) * .45 : L.waterTop + (startBtnY() - startBtnR() - L.waterTop) * .22) + Math.sin(S.t * 1.2) * 4 * MOT;
+  ctx.strokeText('Little Fishing', tx, ty); ctx.fillStyle = '#1C7CD0'; ctx.fillText('Little Fishing', tx, ty);
+  const by = startBtnY(), r0 = startBtnR(), gapTop = ty + fs * .55, gapBot = by - r0 - 6;
+  const fr = clamp(Math.min(U * .14, (gapBot - gapTop) * .5 / 0.75), 24, 120);
+  drawFish(COLORS[1], W / 2, (gapTop + gapBot) / 2 + Math.sin(S.t * 1.5) * 3 * MOT, fr, 1, {tail: S.t * 4});
+  const r = r0 * (1 + .04 * Math.sin(S.t * TAU / 1.6) * MOT);
+  ctx.fillStyle = 'rgba(0,90,40,.18)'; ctx.beginPath(); ctx.arc(W / 2, by + 6, r, 0, TAU); ctx.fill();
+  ctx.fillStyle = '#3DDC84'; ctx.beginPath(); ctx.arc(W / 2, by, r, 0, TAU); ctx.fill();
+  ctx.strokeStyle = '#fff'; ctx.lineWidth = 6; ctx.beginPath(); ctx.arc(W / 2, by, r, 0, TAU); ctx.stroke();
+  ctx.fillStyle = '#fff'; ctx.beginPath(); ctx.moveTo(W / 2 - r * .3, by - r * .42); ctx.lineTo(W / 2 + r * .45, by); ctx.lineTo(W / 2 - r * .3, by + r * .42); ctx.closePath(); ctx.fill();
+  if (!L.land || H > 420) {
+    ctx.font = `600 ${clamp(U * .032, 11, 17)}px system-ui,sans-serif`; ctx.fillStyle = 'rgba(20,60,100,.75)';
+    ctx.fillText('Tap a fish • tap when the arrow is in the green • drag it to the bucket', W / 2, by + r + clamp(U * .06, 18, 40), W * .94);
+  }
+}
+function drawFishLayer(states) {
+  for (const f of S.fish) if (states.includes(f.state)) {
+    let glow = 0;
+    if (S.prompt && f.state === 'swim' && f.c.id === S.prompt.c.id && S.mode === 'idle' && S.idleT > 4) glow = .5 + .5 * Math.sin(S.t * 2.5);
+    drawFish(f.c, f.x + f.dx, f.y, f.r, f.face, {tail: f.tail, rot: f.rot, scale: f.scale, glow, model: f.model});
+  }
+}
+function drawSheet() {
+  ctx.fillStyle = 'rgba(240,250,255,.9)'; ctx.fillRect(0, 0, W, H);
+  const ids = MODEL_IDS, sa = L.safe;
+  if (SHEET === '1') {
+    const cols = W > H ? 5 : 2, rows = Math.ceil(ids.length / cols), cw = (W - sa.l - sa.r) / cols, ch = (H - sa.t - sa.b) / rows, r = Math.min(cw / 3.2, ch / 2.7);
+    ids.forEach((id, i) => { const x = sa.l + (i % cols + .5) * cw + r * .18, y = sa.t + (Math.floor(i / cols) + .5) * ch;
+      drawFish(COLORS[i % COLORS.length], x, y, r, 1, {model: id, tail: S.t * 4 + i}); });
+  } else {
+    const cols = COLORS.length, rows = ids.length, cw = (W - sa.l - sa.r) / cols, ch = (H - sa.t - sa.b) / rows, r = Math.min(cw / 3.2, ch / 2.7);
+    ids.forEach((id, j) => COLORS.forEach((c, i) => drawFish(c, sa.l + (i + .5) * cw + r * .18, sa.t + (j + .5) * ch, r, 1, {model: id, tail: S.t * 4 + i + j})));
+  }
+}
+function drawDebug() {
+  const p = P();
+  ctx.font = '12px monospace'; ctx.textAlign = 'left'; ctx.textBaseline = 'top'; ctx.fillStyle = 'rgba(0,0,0,.55)';
+  ctx.fillRect(L.safe.l + 4, H - L.safe.b - 22, 330, 18); ctx.fillStyle = '#fff';
+  ctx.fillText(`skill ${S.skill.toFixed(1)} zone ${(p.zone * 100).toFixed(0)}% arrow ${p.period.toFixed(1)}s fish ${p.fishCount} size ${(p.size * 100).toFixed(0)}%`, L.safe.l + 8, H - L.safe.b - 19);
+}
+function draw() {
+  drawScene();
+  drawFishLayer(['swim', 'hooked', 'flee']);
+  drawLine();
+  drawBoatGroup();
+  drawFishLayer(['reel', 'dangle', 'drag', 'back']);
+  if (S.mode !== 'start') { drawHome(); if (S.mode === 'idle' || S.mode === 'hook' || S.mode === 'meter') drawPrompt(); }
+  drawParts();
+  drawMeter();
+  if (S.mode === 'count') { drawCount(); drawParts(); } else drawHints();
+  if (S.mode === 'start') drawTitle();
+  if (DEBUG) drawDebug();
+  if (SHEET) drawSheet();
+}
+
+/* ---------- loop ---------- */
+let last = performance.now();
+function frame(now) {
+  const dt = Math.min(.05, Math.max(0, (now - last) / 1000)); last = now;
+  const t0 = performance.now();
+  update(dt); draw();
+  S.perf.frames++; S.perf.ms += performance.now() - t0;
+  requestAnimationFrame(frame);
+}
+
+/* home-screen icon + manifest are real files in the web build (apple-touch-icon.png, manifest.webmanifest) */
+
+layout();
+for (let i = 0; i < 3; i++) spawnFish({inside: true});   // fish swim behind the title screen
+if (SHEET) setTimeout(() => { S.fish = []; ctlEl.style.display = 'none'; S.mode = 'sheet'; }, 0);
+setMode('start');
+requestAnimationFrame(frame);
+
+/* offline support: cache the app after first open (relative path, works under a project subpath) */
+if ('serviceWorker' in navigator && location.protocol !== 'file:') {
+  window.addEventListener('load', () => { navigator.serviceWorker.register('sw.js').catch(() => {}); });
+}
+})();
+</script>
+</body>
+</html>
