@@ -1,6 +1,6 @@
 // Little Fishing service worker: caches the app on first open so it keeps working offline.
 // Bump VERSION whenever any file changes so devices pick up the new build.
-const VERSION = 'little-fishing-v5.1';
+const VERSION = 'little-fishing-v6.0';
 const FILES = ['./', './index.html', './manifest.webmanifest', './apple-touch-icon.png',
   './icon-192.png', './icon-512.png', './icon-maskable-512.png', './favicon-32.png'];
 

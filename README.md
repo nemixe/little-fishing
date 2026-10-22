@@ -1,6 +1,6 @@
 # Little Fishing
 
-A gentle, ad-free fishing game for toddlers: tap to cast, catch colourful fish, drop them in the bucket. No text to read, no accounts, no tracking. It is a single HTML file plus icons, and after the first open it works offline (airplane mode is fine).
+A gentle, ad-free fishing game for toddlers: tap to cast, catch colourful fish, drop each one in the bucket of its own colour (green, blue or red). No text to read, no accounts, no tracking. It is a single HTML file plus icons, and after the first open it works offline (airplane mode is fine).
 
 **Play:** open the GitHub Pages link for this repo (https://nemixe.github.io/little-fishing/).
 
