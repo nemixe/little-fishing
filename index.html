@@ -121,9 +121,16 @@ function audioInit() {
       noiseBuf = AC.createBuffer(1, AC.sampleRate * 0.6, AC.sampleRate);
       const d = noiseBuf.getChannelData(0); for (let i = 0; i < d.length; i++) d[i] = Math.random() * 2 - 1;
     }
-    if (AC.state === 'suspended') AC.resume();
+    if (AC.state !== 'running') { const r = AC.resume(); if (r && r.catch) r.catch(() => {}); }
+    if (!audioUnlocked) {   // iOS: play a silent buffer inside the gesture to unlock Web Audio
+      const b = AC.createBuffer(1, 1, 22050), src = AC.createBufferSource(); src.buffer = b; src.connect(AC.destination); src.start(0);
+      if (AC.state === 'running') audioUnlocked = true;
+    }
   } catch (e) { AC = null; }
 }
+let audioUnlocked = false;
+try { if (navigator.audioSession) navigator.audioSession.type = 'playback'; } catch (e) {}   // iOS 17+: play even with the silent switch on
+['touchend', 'click', 'keydown'].forEach(ev => document.addEventListener(ev, () => audioInit(), {capture: true, passive: true}));
 function note(freq, o = {}) {
   if (!AC || !settings.sound || AC.state !== 'running') return;
   const t0 = AC.currentTime + (o.when || 0), dur = o.dur || 0.4, vol = o.vol == null ? 0.2 : o.vol;
