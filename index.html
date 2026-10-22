@@ -704,7 +704,7 @@ function selectFish(f) {
   const p = P();
   S.m = { u: 0, phase: 0, period: p.period, zw: p.zone, zc: rand(.28, .72), show: 0, age: 0, glowBtn: 0,
           lock: 0, lastIn: -9, demo: S.fleeStreak >= 2, flash: 0, hitU: 0, closing: false, c: f.c, model: f.model };
-  S.dragMiss = 0; S.bucketBoost = 1;
+  S.dragMiss = 0; S.wrongTry = 0; S.bucketBoost = 1;
 }
 function meterArea(x, y) {
   return (y >= L.mPY - 28 && x >= L.mPX - 24 && x <= L.mPX + L.mPW + 24) || dist(x, y, L.mBtnX, L.mBtnY) < L.mBtnR * 1.5;
@@ -760,7 +760,7 @@ function tryDrop(px, py) {
     // not this one: the fish just floats back to the line (never lost) so the child can try again
     S.dragMiss++; f.state = 'back'; f.from = {x: f.x, y: f.y, rot: f.rot}; setMode('back');
     if (bi >= 0) {   // a different color: that bucket gives a tiny "no-no" wiggle, the right one gives a little hop
-      S.bk[L.B[bi].c.id].no = 1; S.bk[f.c.id].hint = 1; S.wrongDrops++;
+      S.bk[L.B[bi].c.id].no = 1; S.bk[f.c.id].hint = 1; S.wrongDrops++; S.wrongTry++;
       sfx.nope(); buzz(8); bubbles(L.B[bi].x, L.bTop, 2);
     } else sfx.floatBack();
     if (S.dragMiss >= 2) S.bucketBoost = Math.min(1.35, S.bucketBoost + 0.15);
@@ -1186,7 +1186,7 @@ function drawBoatGroup() {
 }
 /* the color the buckets are waiting for: the fish being carried (or the bucket being counted) */
 function wantedBucket() {
-  if (S.cur && (S.mode === 'dangle' || S.mode === 'drag' || S.mode === 'back')) return bucketIndexOf(S.cur.c);
+  if (S.cur && S.wrongTry > 0 && (S.mode === 'dangle' || S.mode === 'drag' || S.mode === 'back')) return bucketIndexOf(S.cur.c);   // no hint on the first try: the child picks the color first
   if (S.mode === 'count' && S.lineup) return S.lineup.bi;
   return -1;
 }
@@ -1428,7 +1428,7 @@ function drawHints() {
     const f = (S.prompt && sw.find(o => o.c.id === S.prompt.c.id)) || sw.sort((a, b) => Math.abs(a.x - W / 2) - Math.abs(b.x - W / 2))[0];
     if (f) { const ph = (S.idleT * 1.2) % 1, press = ph < .3 ? Math.sin(ph / .3 * Math.PI) : 0; hand(f.x + f.r * .15, f.y + f.r * .1, k, press, .85); }
   }
-  if (S.mode === 'dangle' && (S.modeT > (S.count === 0 ? 1.2 : 4) || S.dragMiss > 0)) {
+  if (S.mode === 'dangle' && S.wrongTry > 0 && S.modeT > 1.2) {   // drag hint only after a wrong bucket
     const f = S.cur, cyc = (S.modeT * .55) % 1, t = easeIO(clamp((cyc - .15) / .6, 0, 1)), tx = L.B[bucketIndexOf(f.c)].x;
     const hx = lerp(f.x, tx, t), hy = lerp(f.y, L.bTop - L.bh * .1, t) - Math.sin(t * Math.PI) * U * .05;
     ctx.setLineDash([8, 10]); ctx.strokeStyle = 'rgba(255,255,255,.75)'; ctx.lineWidth = 4;
